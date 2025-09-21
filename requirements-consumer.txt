@@ -1,0 +1,6 @@
+# requirements-consumer.txt  
+kafka-python==2.0.2
+pymongo==4.6.1
+pandas==2.1.4
+python-dateutil==2.8.2
+pytz==2023.3
