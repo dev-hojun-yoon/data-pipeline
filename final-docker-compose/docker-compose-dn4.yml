@@ -64,24 +64,33 @@ services:
     volumes:
       - mongodb-2-data:/data/db
       - mongodb-2-config:/data/configdb
-      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile
+      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.2.12
-    extra_hosts:
-      - "mongodb-1:192.168.0.12"
-    command: >
-      bash -c "
-        chmod 600 /etc/mongo/mongo-keyfile &&
-        exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
-      "
+    command:
+      - /bin/bash
+      - -c
+      - |
+        # 키파일 권한 설정
+        if [ -f /etc/mongo/mongo-keyfile ]; then
+          chmod 400 /etc/mongo/mongo-keyfile
+          chown mongodb:mongodb /etc/mongo/mongo-keyfile
+        fi
+        
+        echo 'Starting MongoDB Secondary (waiting for Primary to initialize users)...'
+        # Primary에서 사용자를 생성할 것이므로 바로 레플리카셋 모드로 시작
+        if [ -f /etc/mongo/mongo-keyfile ]; then
+          exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
+        else
+          exec mongod --replSet rs0 --bind_ip_all
+        fi
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping')"]
       interval: 30s
       timeout: 10s
       retries: 3
     restart: unless-stopped
-
 
 # MongoDB Arbiter (투표 전용 노드)
   mongodb-arbiter:
@@ -95,20 +104,28 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: password123
     volumes:
       - mongodb-arbiter-data:/data/db
-      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile
+      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.2.13
-    extra_hosts:
-      - "mongodb-1:192.168.0.12"
-      - "mongodb-2:192.168.0.13"
-    command: >
-      bash -c "
-        chmod 600 /etc/mongo/mongo-keyfile &&
-        exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
-      "
+    command:
+      - /bin/bash
+      - -c
+      - |
+        # 키파일 권한 설정
+        if [ -f /etc/mongo/mongo-keyfile ]; then
+          chmod 400 /etc/mongo/mongo-keyfile
+          chown mongodb:mongodb /etc/mongo/mongo-keyfile
+        fi
+        
+        echo 'Starting MongoDB Arbiter...'
+        if [ -f /etc/mongo/mongo-keyfile ]; then
+          exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
+        else
+          exec mongod --replSet rs0 --bind_ip_all
+        fi
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping')"]
       interval: 30s
       timeout: 10s
       retries: 3

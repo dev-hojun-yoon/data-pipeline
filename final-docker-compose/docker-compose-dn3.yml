@@ -112,68 +112,65 @@ services:
       - mongodb-1-data:/data/db
       - mongodb-1-config:/data/configdb
       - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile:ro
-      - ./scripts/init-replica.js:/docker-entrypoint-initdb.d/init-replica.js:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.13
-    extra_hosts:
-      - "mongodb-2:192.168.0.13"
-      - "mongodb-arbiter:192.168.0.13"
-    command: >
-      bash -c "
+    command:
+      - /bin/bash
+      - -c
+      - |
         # 키파일 권한 설정
         if [ -f /etc/mongo/mongo-keyfile ]; then
           chmod 400 /etc/mongo/mongo-keyfile
           chown mongodb:mongodb /etc/mongo/mongo-keyfile
         fi
         
-        # 데이터 디렉토리가 비어있는지 확인 (첫 실행인지)
+        # 첫 실행인지 확인
         if [ ! -f /data/db/.mongodb_initialized ]; then
           echo 'First time setup - starting without authentication'
-          # 첫 실행시에는 인증 없이 시작
           mongod --bind_ip_all --port 27017 &
-          MONGO_PID=\$!
+          MONGO_PID=$$!
           
-          # MongoDB가 준비될 때까지 대기
+          # MongoDB 준비 대기
           echo 'Waiting for MongoDB to start...'
           until mongosh --port 27017 --eval 'db.runCommand({ping: 1})' > /dev/null 2>&1; do
             sleep 2
           done
           
           echo 'Creating admin user...'
-          mongosh --port 27017 --eval \"
+          mongosh --port 27017 --eval "
             db.getSiblingDB('admin').createUser({
               user: '${MONGO_INITDB_ROOT_USERNAME}',
               pwd: '${MONGO_INITDB_ROOT_PASSWORD}',
               roles: [{ role: 'root', db: 'admin' }]
             });
-          \"
+          "
           
           echo 'Creating application database and user...'
-          mongosh --port 27017 --eval \"
+          mongosh --port 27017 --eval "
             db.getSiblingDB('${MONGO_INITDB_DATABASE}').createUser({
               user: 'app_user',
               pwd: 'app_password',
               roles: [{ role: 'readWrite', db: '${MONGO_INITDB_DATABASE}' }]
             });
-          \"
+          "
           
           # 초기화 완료 표시
           touch /data/db/.mongodb_initialized
           
           # MongoDB 종료
           echo 'Shutting down MongoDB...'
-          mongosh --port 27017 --eval 'db.getSiblingDB(\"admin\").shutdownServer()' || true
-          wait \$MONGO_PID
+          mongosh --port 27017 --eval 'db.getSiblingDB("admin").shutdownServer()' || true
+          wait $$MONGO_PID
         fi
         
-        echo 'Starting MongoDB with authentication and replica set...'
+        echo 'Starting MongoDB with replica set (waiting for other nodes)...'
+        # 레플리카셋 모드로 시작하되, 초기화는 나중에
         if [ -f /etc/mongo/mongo-keyfile ]; then
           exec mongod --replSet rs0 --bind_ip_all --auth --keyFile /etc/mongo/mongo-keyfile
         else
           exec mongod --replSet rs0 --bind_ip_all --auth
         fi
-      "
     healthcheck:
       test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping')"]
       interval: 30s
@@ -280,3 +277,76 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # MongoDB 클러스터 초기화 서비스 (일회성)
+  mongodb-cluster-init:
+    image: mongo:7.0
+    container_name: mongodb-cluster-init
+    depends_on:
+      - mongodb-1
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password123
+    networks:
+      hadoop-network:
+        ipv4_address: 172.20.1.17
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo 'Waiting for all MongoDB instances to be ready...'
+        sleep 120  # DN4 MongoDB들이 시작될 시간을 충분히 대기
+        
+        # Primary 연결 시도
+        echo 'Connecting to MongoDB Primary...'
+        until mongosh --host 192.168.0.12:27017 -u admin -p password123 --authenticationDatabase admin --eval "db.runCommand({ping: 1})" > /dev/null 2>&1; do
+          echo 'Waiting for Primary MongoDB...'
+          sleep 10
+        done
+        
+        # Secondary 연결 확인
+        echo 'Checking Secondary MongoDB...'
+        until nc -z 192.168.0.13 27018; do
+          echo 'Waiting for Secondary MongoDB...'
+          sleep 10
+        done
+        
+        # Arbiter 연결 확인  
+        echo 'Checking Arbiter MongoDB...'
+        until nc -z 192.168.0.13 27019; do
+          echo 'Waiting for Arbiter MongoDB...'
+          sleep 10
+        done
+        
+        echo 'All MongoDB instances are ready. Initializing replica set...'
+        mongosh --host 192.168.0.12:27017 -u admin -p password123 --authenticationDatabase admin --eval "
+          try {
+            rs.initiate({
+              _id: 'rs0',
+              members: [
+                { _id: 0, host: '192.168.0.12:27017', priority: 2 },
+                { _id: 1, host: '192.168.0.13:27018', priority: 1 },
+                { _id: 2, host: '192.168.0.13:27019', arbiterOnly: true }
+              ]
+            });
+            print('Replica set initialized successfully');
+          } catch (error) {
+            if (error.code === 23) {
+              print('Replica set already initialized');
+            } else {
+              print('Error initializing replica set: ' + error);
+            }
+          }
+        "
+        
+        echo 'Waiting for primary election...'
+        sleep 30
+        
+        # 레플리카셋 상태 확인
+        mongosh --host 192.168.0.12:27017 -u admin -p password123 --authenticationDatabase admin --eval "
+          print('Replica set status:');
+          printjson(rs.status());
+        "
+        
+        echo 'MongoDB cluster initialization completed'
+    restart: "no"  # 일회성 실행
