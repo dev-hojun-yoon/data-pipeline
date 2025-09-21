@@ -111,7 +111,8 @@ services:
     volumes:
       - mongodb-1-data:/data/db
       - mongodb-1-config:/data/configdb
-      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile
+      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile:ro
+      - ./scripts/init-replica.js:/docker-entrypoint-initdb.d/init-replica.js:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.13
@@ -120,59 +121,96 @@ services:
       - "mongodb-arbiter:192.168.0.13"
     command: >
       bash -c "
-        chmod 600 /etc/mongo/mongo-keyfile
-
-        if [ -f /data/db/mongod.lock ]; then
-          exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
-          exit 0
+        # 키파일 권한 설정
+        if [ -f /etc/mongo/mongo-keyfile ]; then
+          chmod 400 /etc/mongo/mongo-keyfile
+          chown mongodb:mongodb /etc/mongo/mongo-keyfile
         fi
-
-        mongod --bind_ip_all &
         
-        until mongosh --eval 'db.adminCommand(\"ping\")' > /dev/null 2>&1; do
-          sleep 1
-        done
-
-        echo 'Initiating replica set...'
-        mongosh --eval ' 
-          rs.initiate({
-            _id: \"rs0\",
-            members: [
-              {_id: 0, host: \"192.168.0.12:27017\", priority: 2},
-              {_id: 1, host: \"192.168.0.13:27018\", priority: 1},
-              {_id: 2, host: \"192.168.0.13:27019\", arbiterOnly: true}
-            ]
-          });
-        '
-
-        echo 'Waiting for primary to be elected...'
-        until mongosh --eval 'rs.isMaster().ismaster' | grep -q 'true'; do
-          sleep 1
-        done
-
-        echo 'Primary elected. Creating admin user...'
-        mongosh --eval "
-          db.getSiblingDB('admin').createUser({
-            user: \"${MONGO_INITDB_ROOT_USERNAME}\",
-            pwd: \"${MONGO_INITDB_ROOT_PASSWORD}\",
-            roles: [{ role: 'root', db: 'admin' }]
-          })
-        "
-
-        echo 'Shutting down temporary MongoDB...'
-        mongosh --username \"${MONGO_INITDB_ROOT_USERNAME}\" --password \"${MONGO_INITDB_ROOT_PASSWORD}\" --authenticationDatabase admin --eval 'db.getSiblingDB(\"admin\").shutdownServer()'
+        # 데이터 디렉토리가 비어있는지 확인 (첫 실행인지)
+        if [ ! -f /data/db/.mongodb_initialized ]; then
+          echo 'First time setup - starting without authentication'
+          # 첫 실행시에는 인증 없이 시작
+          mongod --bind_ip_all --port 27017 &
+          MONGO_PID=\$!
+          
+          # MongoDB가 준비될 때까지 대기
+          echo 'Waiting for MongoDB to start...'
+          until mongosh --port 27017 --eval 'db.runCommand({ping: 1})' > /dev/null 2>&1; do
+            sleep 2
+          done
+          
+          echo 'Creating admin user...'
+          mongosh --port 27017 --eval \"
+            db.getSiblingDB('admin').createUser({
+              user: '${MONGO_INITDB_ROOT_USERNAME}',
+              pwd: '${MONGO_INITDB_ROOT_PASSWORD}',
+              roles: [{ role: 'root', db: 'admin' }]
+            });
+          \"
+          
+          echo 'Creating application database and user...'
+          mongosh --port 27017 --eval \"
+            db.getSiblingDB('${MONGO_INITDB_DATABASE}').createUser({
+              user: 'app_user',
+              pwd: 'app_password',
+              roles: [{ role: 'readWrite', db: '${MONGO_INITDB_DATABASE}' }]
+            });
+          \"
+          
+          # 초기화 완료 표시
+          touch /data/db/.mongodb_initialized
+          
+          # MongoDB 종료
+          echo 'Shutting down MongoDB...'
+          mongosh --port 27017 --eval 'db.getSiblingDB(\"admin\").shutdownServer()' || true
+          wait \$MONGO_PID
+        fi
         
-        wait
-
-        echo 'Starting permanent MongoDB with authentication...'
-        exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
+        echo 'Starting MongoDB with authentication and replica set...'
+        if [ -f /etc/mongo/mongo-keyfile ]; then
+          exec mongod --replSet rs0 --bind_ip_all --auth --keyFile /etc/mongo/mongo-keyfile
+        else
+          exec mongod --replSet rs0 --bind_ip_all --auth
+        fi
       "
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping')"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 60s
     restart: unless-stopped
+
+  # Spark Master
+  spark-master:
+    image: bitnami/spark:3.5
+    hostname: spark-master
+    container_name: spark-master
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+    volumes:
+      - spark-master-logs:/opt/bitnami/spark/logs
+      - ./spark-jobs:/opt/spark-jobs
+      - ./spark-libs:/opt/spark-libs
+    networks:
+      hadoop-network:
+        ipv4_address: 172.20.1.14
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
 
   # Spark Job Submitter - HDFS에서 데이터 읽기 및 Kafka 전송
   spark-submit-job:
@@ -242,32 +280,3 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-# Spark Master
-  spark-master:
-    image: bitnami/spark:3.5
-    hostname: spark-master
-    container_name: spark-master
-    ports:
-      - "8081:8080"
-      - "7077:7077"
-    environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
-      - SPARK_USER=spark
-    volumes:
-      - spark-master-logs:/opt/bitnami/spark/logs
-      - ./spark-jobs:/opt/spark-jobs
-      - ./spark-libs:/opt/spark-libs
-    networks:
-      hadoop-network:
-        ipv4_address: 172.20.1.14
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
