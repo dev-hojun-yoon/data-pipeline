@@ -1,0 +1,148 @@
+version: '3.8'
+
+networks:
+  hadoop-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  kafka-2-data:
+  mongodb-2-data:
+  mongodb-2-config:
+  mongodb-arbiter-data:
+  spark-worker-logs:
+
+services:
+  # Kafka 브로커 2
+  kafka-2:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: kafka-2
+    container_name: kafka-2
+    ports:
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: '192.168.0.12:2189'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://192.168.0.13:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: EXTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 2
+      KAFKA_MIN_IN_SYNC_REPLICAS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    volumes:
+      - kafka-2-data:/var/lib/kafka/data
+    networks:
+      hadoop-network:
+        ipv4_address: 172.20.2.11
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9093", "--list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # MongoDB Secondary
+  mongodb-2:
+    image: mongo:7.0
+    hostname: mongodb-2
+    container_name: mongodb-2
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: financial_db
+    volumes:
+      - mongodb-2-data:/data/db
+      - mongodb-2-config:/data/configdb
+      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile
+    networks:
+      hadoop-network:
+        ipv4_address: 172.20.2.12
+    extra_hosts:
+      - "mongodb-1:192.168.0.12"
+    command: >
+      bash -c "
+        chmod 600 /etc/mongo/mongo-keyfile &&
+        exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
+      "
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+
+# MongoDB Arbiter (투표 전용 노드)
+  mongodb-arbiter:
+    image: mongo:7.0
+    hostname: mongodb-arbiter
+    container_name: mongodb-arbiter
+    ports:
+      - "27019:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+    volumes:
+      - mongodb-arbiter-data:/data/db
+      - ./scripts/mongo-keyfile:/etc/mongo/mongo-keyfile
+    networks:
+      hadoop-network:
+        ipv4_address: 172.20.2.13
+    extra_hosts:
+      - "mongodb-1:192.168.0.12"
+      - "mongodb-2:192.168.0.13"
+    command: >
+      bash -c "
+        chmod 600 /etc/mongo/mongo-keyfile &&
+        exec mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongo/mongo-keyfile
+      "
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Spark Worker
+  spark-worker:
+    image: bitnami/spark:3.5
+    hostname: spark-worker
+    container_name: spark-worker
+    ports:
+      - "8082:8081"
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+    volumes:
+      - spark-worker-logs:/opt/bitnami/spark/logs
+      - ./spark-jobs:/opt/spark-jobs
+      - ./spark-libs:/opt/spark-libs
+    networks:
+      hadoop-network:
+        ipv4_address: 172.20.2.14
+    extra_hosts:
+      - "spark-master:192.168.0.12"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
