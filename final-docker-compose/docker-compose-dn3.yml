@@ -355,7 +355,7 @@ services:
           --conf spark.sql.execution.arrow.pyspark.enabled=false \
           /app/spark_producer.py \
           --json-file /user/hadoop3/test.json \
-          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9093 || \
+          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9093 && \
         (echo 'Spark 작업 실패, 로그 확인 중...' && 
           find /opt/bitnami/spark/logs -name '*.log' -exec echo 'Log file: {}' \; -exec tail -50 {} \; 2>/dev/null || 
           echo '로그 파일을 찾을 수 없음')
