@@ -213,9 +213,9 @@ services:
     command: >
       bash -c "
         echo '--- DEBUGGING: Checking job_script.py ---' && \
-        ls -la /opt/bitnami/spark/work/job_script.py && \
-        file /opt/bitnami/spark/work/job_script.py && \
-        head -5 /opt/bitnami/spark/work/job_script.py && \
+        ls -la /opt/bitnami/spark/work/ && \
+        echo 'File type:' && file /opt/bitnami/spark/work/job_script.py && \
+        echo 'First 5 lines:' && head -5 /opt/bitnami/spark/work/job_script.py && \
         echo '--- END DEBUGGING ---' && \
         
         echo 'Waiting for dependent services to start...' && \
