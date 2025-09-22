@@ -186,7 +186,9 @@ services:
 
   # Spark Job Submitter - HDFS에서 데이터 읽기 및 Kafka 전송
   spark-submit-job:
-    image: bitnami/spark:3.5
+    build:
+      context: ..
+      dockerfile: Dockerfile.spark-submit
     container_name: spark-submit-job
     depends_on:
       - spark-master
@@ -197,7 +199,6 @@ services:
       - SPARK_MASTER_URL=spark://spark-master:7077
       - HADOOP_USER_NAME=hadoop
     volumes:
-      - ..:/app
       - ../hadoop-conf:/etc/hadoop:ro
     networks:
       hadoop-network:
@@ -211,8 +212,8 @@ services:
       - "kafka-2:192.168.0.13"
     command: >
       bash -c "
-        echo '--- DEBUGGING: Listing contents of /app ---' && \
-        ls -l /app && \
+        echo '--- DEBUGGING: Listing contents of /opt/bitnami/spark/work ---' && \
+        ls -l /opt/bitnami/spark/work && \
         echo '--- END DEBUGGING ---' && \
         apt-get update && apt-get install -y netcat-openbsd && \
         
@@ -233,7 +234,7 @@ services:
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
           --conf spark.hadoop.dfs.datanode.use.datanode.hostname=true \
-          /app/spark_producer.py --json-file /user/hadoop3/test.json --kafka-brokers 192.168.0.12:9092,192.168.0.13:9092 ;
+          /opt/bitnami/spark/work/job_script.py --json-file /user/hadoop3/test.json --kafka-brokers 192.168.0.12:9092,192.168.0.13:9092 ;
       "
     restart: on-failure
 
