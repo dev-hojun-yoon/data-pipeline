@@ -27,7 +27,6 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2189
       ZOOKEEPER_TICK_TIME: 2000
       ZOOKEEPER_SERVER_ID: 1
-      # Standalone Zookeeper, no other servers
       ZOOKEEPER_SERVERS: zookeeper-1:2888:3888
     volumes:
       - zookeeper-1-data:/var/lib/zookeeper/data
@@ -127,35 +126,35 @@ services:
         
         # 첫 실행인지 확인
         if [ ! -f /data/db/.mongodb_initialized ]; then
-          echo 'First time setup - starting without authentication'
+          echo 'First time setup - starting without authentication' 
           mongod --bind_ip_all --port 27017 & 
           MONGO_PID=$${!} 
           
           # MongoDB 준비 대기
-          echo 'Waiting for MongoDB to start...'
+          echo 'Waiting for MongoDB to start...' 
           until mongosh --port 27017 --eval 'db.runCommand({ping: 1})' > /dev/null 2>&1; do
             sleep 2
           done
           
-          echo 'Creating admin user...'
+          echo 'Creating admin user...' 
           mongosh --port 27017 --eval "db.getSiblingDB('admin').createUser({user: '$${MONGO_INITDB_ROOT_USERNAME}', pwd: '$${MONGO_INITDB_ROOT_PASSWORD}', roles: [{role: 'root', db: 'admin'}]})"
           
-          echo 'Creating application database and user...'
+          echo 'Creating application database and user...' 
           mongosh --port 27017 --eval "db.getSiblingDB('$${MONGO_INITDB_DATABASE}').createUser({user: 'app_user', pwd: 'app_password', roles: [{role: 'readWrite', db: '$${MONGO_INITDB_DATABASE}'}]})"
 
-          echo 'Forcing database creation by creating a placeholder collection...'
+          echo 'Forcing database creation by creating a placeholder collection...' 
           mongosh --port 27017 --eval "db.getSiblingDB('$${MONGO_INITDB_DATABASE}').createCollection('placeholder')"
           
           # 초기화 완료 표시
           touch /data/db/.mongodb_initialized
           
           # MongoDB 종료 (인증 사용)
-          echo 'Shutting down MongoDB with authentication...'
+          echo 'Shutting down MongoDB with authentication...' 
           mongosh --port 27017 -u '$${MONGO_INITDB_ROOT_USERNAME}' -p '$${MONGO_INITDB_ROOT_PASSWORD}' --authenticationDatabase 'admin' --eval 'db.getSiblingDB("admin").shutdownServer()' || true
           wait $${MONGO_PID}
         fi
         
-        echo 'Starting MongoDB with replica set (waiting for other nodes)...'
+        echo 'Starting MongoDB with replica set (waiting for other nodes)...' 
         # 레플리카셋 모드로 시작하되, 초기화는 나중에
         if [ -f /etc/mongo/mongo-keyfile ]; then
           exec mongod --replSet rs0 --bind_ip_all --auth --keyFile /etc/mongo/mongo-keyfile
@@ -201,7 +200,7 @@ services:
 
 
   # Spark Job Submitter - HDFS에서 데이터 읽기 및 Kafka 전송
-  spark-submit-job:
+    spark-submit-job:
     image: bitnami/spark:3.5
     container_name: spark-submit-job
     depends_on:
@@ -211,35 +210,158 @@ services:
       - SPARK_MODE=submit
       - SPARK_MASTER_URL=spark://spark-master:7077
       - HADOOP_USER_NAME=hadoop
+      - HADOOP_CONF_DIR=/etc/hadoop
       - SPARK_SUBMIT_ARGS=--class DataPipelineJob --master spark://spark-master:7077 --deploy-mode client
+      # HDFS 접근을 위한 환경 변수
+      - HDFS_NAMENODE_USER=hdfs
+      - HDFS_DATANODE_USER=hdfs
+      - HDFS_SECONDARYNAMENODE_USER=hdfs
     volumes:
       - ./spark_producer.py:/app/spark_producer.py
       - ./spark-libs:/opt/spark-libs
+      # Hadoop 설정 파일들을 마운트
       - ./hadoop-conf/core-site.xml:/etc/hadoop/core-site.xml
+      - ./hadoop-conf/hdfs-site.xml:/etc/hadoop/hdfs-site.xml
+      - ./hadoop-conf/yarn-site.xml:/etc/hadoop/yarn-site.xml
+      # 테스트 스크립트 마운트
+      - ./scripts/hdfs-test.sh:/app/hdfs-test.sh
+      # 추가적인 Hadoop 라이브러리
+      - ./hadoop-libs:/opt/hadoop-libs
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.15
+    # HDFS 클러스터의 모든 노드에 대한 호스트 매핑
     extra_hosts:
-      - "namenode:192.168.0.9"
+      - "namenode:192.168.0.9"           # 네임노드 IP
+      - "datanode3:192.168.0.12"        # 데이터노드3 IP (현재 kafka가 있는 노드)
+      - "datanode4:192.168.0.13"        # 데이터노드4 IP
     command: >
       bash -c "
-        sleep 60 &&
+        echo 'Spark HDFS Producer 시작...' &&
+
+        # 필요한 패키지 설치 (네트워크 도구)
+        apt-get update -qq && apt-get install -y -qq netcat-traditional telnet curl > /dev/null 2>&1 &&
+
+        # 기본 대기 시간
+        echo 'Spark 마스터 준비 대기 중...' &&
+        sleep 30 &&
+
+        # 연결 테스트 함수 정의
+        test_connection() {
+          local host=$$1
+          local port=$$2
+          local service=$$3
+          echo \"테스트 중: $$service ($$host:$$port)\" 
+
+          # timeout 명령어와 함께 사용 (10초 타임아웃)
+          if timeout 10 bash -c \"cat < /dev/null > /dev/tcp/$$host/$$port\" 2>/dev/null; then
+            echo \"✓ $$service 연결 성공\" 
+            return 0
+          else
+            echo \"✗ $$service 연결 실패\" 
+            return 1
+          fi
+        } &&
+
+        # HDFS 네임노드 연결 테스트
+        echo '=== HDFS 연결 테스트 시작 ===' &&
+        max_attempts=30 &&
+        attempt=0 &&
+
+        while [ $$attempt -lt $$max_attempts ]; do
+          if test_connection namenode 9000 'HDFS NameNode'; then
+            echo 'HDFS 네임노드 연결 확인됨!'
+            break
+          fi
+
+          attempt=$$(($$attempt + 1))
+          echo \"연결 재시도 $$attempt/$$max_attempts...\" 
+          sleep 10
+        done &&
+
+        if [ $$attempt -ge $$max_attempts ]; then
+          echo '경고: HDFS 네임노드 연결 실패, 하지만 계속 진행...' 
+        fi &&
+
+        # Hadoop 설정 확인
+        echo '=== Hadoop 설정 확인 ===' &&
+        if [ -f '/etc/hadoop/core-site.xml' ]; then
+          echo '✓ core-site.xml 파일 존재' 
+          cat /etc/hadoop/core-site.xml | grep -A1 'fs.defaultFS' || echo '  fs.defaultFS 설정 확인 불가' 
+        else
+          echo '✗ core-site.xml 파일 없음' 
+        fi &&
+
+        # HDFS 파일시스템 테스트
+        echo '=== HDFS 파일시스템 테스트 ===' &&
+        if timeout 30 hadoop fs -ls / > /tmp/hdfs_test.out 2>&1; then
+          echo '✓ HDFS 루트 디렉토리 접근 성공' 
+          echo '루트 디렉토리 내용:' 
+          cat /tmp/hdfs_test.out
+        else
+          echo '✗ HDFS 루트 디렉토리 접근 실패' 
+          echo '오류 내용:' 
+          cat /tmp/hdfs_test.out 2>/dev/null || echo '오류 로그 없음'
+        fi &&
+
+        # 타겟 파일 존재 확인
+        echo '=== 타겟 파일 확인 ===' &&
+        target_file='/user/hadoop3/test.json' &&
+        if timeout 30 hadoop fs -test -e $$target_file; then
+          echo \"✓ 파일 존재: $$target_file\" 
+          echo '파일 정보:' 
+          timeout 15 hadoop fs -ls $$target_file || echo '파일 정보 조회 실패' 
+          echo '파일 크기:' 
+          timeout 15 hadoop fs -du -h $$target_file || echo '파일 크기 조회 실패' 
+        else
+          echo \"✗ 파일 없음: $$target_file\" 
+          echo '상위 디렉토리 확인:' 
+          timeout 15 hadoop fs -ls /user/hadoop3/ 2>/dev/null || echo '/user/hadoop3/ 디렉토리 접근 불가' 
+          timeout 15 hadoop fs -ls /user/ 2>/dev/null || echo '/user/ 디렉토리 접근 불가'
+        fi &&
+
+        # Kafka 연결 테스트
+        echo '=== Kafka 브로커 테스트 ===' &&
+        test_connection 192.168.0.12 9092 'Kafka Broker 1' || echo '  Kafka Broker 1 연결 실패, 계속 진행...' &&
+        test_connection 192.168.0.13 9093 'Kafka Broker 2' || echo '  Kafka Broker 2 연결 실패, 계속 진행...' &&
+
+        # Spark 작업 실행
+        echo '=== Spark 작업 시작 ===' &&
         chmod +x /app/spark_producer.py &&
+
+        # Spark 실행 환경 정보
+        echo \"Spark 홈: $$SPARK_HOME\" &&
+        echo \"Java 홈: $$JAVA_HOME\" &&
+        echo \"Hadoop 설정 디렉토리: $$HADOOP_CONF_DIR\" &&
+
+        # 실제 Spark 작업 실행
         spark-submit \
           --master spark://spark-master:7077 \
           --deploy-mode client \
-          --driver-memory 1g \
-          --executor-memory 1g \
+          --driver-memory 2g \
+          --executor-memory 2g \
           --executor-cores 2 \
-          --jars /opt/spark-libs/kafka-clients-3.5.0.jar,/opt/spark-libs/spark-sql-kafka-0-10_2.12-3.5.0.jar,/opt/spark-libs/hadoop-client-3.3.4.jar \
-          --files /etc/hadoop/core-site.xml \
-          --conf spark.driver.extraJavaOptions=-Dlog4j.configuration=file:/etc/spark/log4j.properties \
-          --conf spark.executor.extraJavaOptions=-Dlog4j.configuration=file:/etc/spark/log4j.properties \
+          --num-executors 2 \
+          --jars /opt/spark-libs/kafka-clients-3.5.0.jar,/opt/spark-libs/spark-sql-kafka-0-10_2.12-3.5.0.jar \
+          --files /etc/hadoop/core-site.xml,/etc/hadoop/hdfs-site.xml \
+          --conf spark.driver.extraJavaOptions='-Dlog4j.configuration=file:/opt/bitnami/spark/conf/log4j.properties' \
+          --conf spark.executor.extraJavaOptions='-Dlog4j.configuration=file:/opt/bitnami/spark/conf/log4j.properties' \
+          --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
+          --conf spark.hadoop.dfs.client.use.datanode.hostname=false \
+          --conf spark.hadoop.dfs.datanode.use.datanode.hostname=false \
+          --conf spark.sql.adaptive.enabled=true \
+          --conf spark.sql.adaptive.coalescePartitions.enabled=true \
+          --conf spark.network.timeout=300s \
+          --conf spark.sql.execution.arrow.pyspark.enabled=false \
           /app/spark_producer.py \
           --json-file /user/hadoop3/test.json \
-          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9093
+          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9093 || \
+        (echo 'Spark 작업 실패, 로그 확인 중...' && 
+          find /opt/bitnami/spark/logs -name '*.log' -exec echo 'Log file: {}' \; -exec tail -50 {} \; 2>/dev/null || 
+          echo '로그 파일을 찾을 수 없음')
       "
     restart: unless-stopped
+
 
   # Kafka to MongoDB Consumer
   kafka-mongo-consumer:
@@ -257,7 +379,6 @@ services:
       - MONGO_DB=financial_db
       - MONGO_USER=admin
       - MONGO_PASSWORD=admin123
-      - BATCH_SIZE=100
     volumes:
       - ./consumer-app:/app
     working_dir: /app
@@ -287,31 +408,31 @@ services:
       - /bin/bash
       - -c
       - |
-        echo 'Waiting for all MongoDB instances to be ready...'
+        echo 'Waiting for all MongoDB instances to be ready...' 
         sleep 120  # DN4 MongoDB들이 시작될 시간을 충분히 대기
         
         # Primary 연결 시도
-        echo 'Connecting to MongoDB Primary...'
+        echo 'Connecting to MongoDB Primary...' 
         until mongosh --host 192.168.0.12:27017 -u admin -p password123 --authenticationDatabase admin --eval "db.runCommand({ping: 1})" > /dev/null 2>&1; do
-          echo 'Waiting for Primary MongoDB...'
+          echo 'Waiting for Primary MongoDB...' 
           sleep 10
         done
         
         # Secondary 연결 확인
-        echo 'Checking Secondary MongoDB...'
+        echo 'Checking Secondary MongoDB...' 
         until nc -z 192.168.0.13 27018; do
-          echo 'Waiting for Secondary MongoDB...'
+          echo 'Waiting for Secondary MongoDB...' 
           sleep 10
         done
         
         # Arbiter 연결 확인  
-        echo 'Checking Arbiter MongoDB...'
+        echo 'Checking Arbiter MongoDB...' 
         until nc -z 192.168.0.13 27019; do
-          echo 'Waiting for Arbiter MongoDB...'
+          echo 'Waiting for Arbiter MongoDB...' 
           sleep 10
         done
         
-        echo 'All MongoDB instances are ready. Initializing replica set...'
+        echo 'All MongoDB instances are ready. Initializing replica set...' 
         mongosh --host 192.168.0.12:27017 -u admin -p password123 --authenticationDatabase admin --eval "
           try {
             rs.initiate({
@@ -332,7 +453,7 @@ services:
           }
         "
         
-        echo 'Waiting for primary election...'
+        echo 'Waiting for primary election...' 
         sleep 30
         
         # 레플리카셋 상태 확인
