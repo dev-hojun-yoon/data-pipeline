@@ -200,7 +200,7 @@ services:
 
 
   # Spark Job Submitter - HDFS에서 데이터 읽기 및 Kafka 전송
-    spark-submit-job:
+  spark-submit-job:
     image: bitnami/spark:3.5
     container_name: spark-submit-job
     depends_on:
