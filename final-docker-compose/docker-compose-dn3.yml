@@ -212,19 +212,16 @@ services:
       - "kafka-2:192.168.0.13"
     command: >
       bash -c "
-        echo '--- DEBUGGING: Checking job_script.py ---' && \
-        ls -la /opt/bitnami/spark/work/ && \
-        echo 'File type:' && file /opt/bitnami/spark/work/job_script.py && \
-        echo 'First 5 lines:' && head -5 /opt/bitnami/spark/work/job_script.py && \
-        echo '--- END DEBUGGING ---' && \
-        
-        echo 'Waiting for dependent services to start...' && \
+        echo '--- 파일 상태 확인 ---' && \
+        ls -la /opt/bitnami/spark/work/job_script.py && \
+        python3 /opt/bitnami/spark/work/job_script.py --help && \
+        echo '--- 의존성 서비스 대기 ---' && \
         until nc -z -w5 namenode 9000; do echo 'Waiting for HDFS namenode...'; sleep 5; done && \
         until nc -z -w5 spark-master 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && \
-        until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1 (INTERNAL)...'; sleep 5; done && \
-        until nc -z -w5 kafka-2 9092; do echo 'Waiting for Kafka Broker 2 (EXTERNAL)...'; sleep 5; done &&
+        until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1...'; sleep 5; done && \
+        until nc -z -w5 kafka-2 9092; do echo 'Waiting for Kafka Broker 2...'; sleep 5; done &&
         
-        echo 'All dependent services are ready. Starting Spark job...' && \
+        echo 'All services ready. Starting Spark job...' && \
         
         /opt/bitnami/spark/bin/spark-submit \
           --master spark://spark-master:7077 \
