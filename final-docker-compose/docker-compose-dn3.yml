@@ -198,7 +198,6 @@ services:
       retries: 3
     restart: unless-stopped
 
-
   # Spark Job Submitter - HDFS에서 데이터 읽기 및 Kafka 전송
   spark-submit-job:
     image: bitnami/spark:3.5
@@ -239,8 +238,37 @@ services:
       bash -c "
         echo 'Spark HDFS Producer 시작...' &&
 
-        # 필요한 패키지 설치 (네트워크 도구)
-        apt-get update -qq && apt-get install -y -qq netcat-traditional telnet curl > /dev/null 2>&1 &&
+        # 필요한 패키지 설치 (네트워크 도구 + Hadoop)
+        echo 'Hadoop 클라이언트 설치 중...' &&
+        apt-get update -qq && 
+        apt-get install -y -qq netcat-traditional telnet curl wget openjdk-11-jdk > /dev/null 2>&1 &&
+        
+        # Hadoop 다운로드 및 설치
+        if [ ! -f '/opt/hadoop/bin/hadoop' ]; then
+          echo 'Hadoop 3.3.4 다운로드 중...' &&
+          cd /opt &&
+          wget -q https://archive.apache.org/dist/hadoop/common/hadoop-3.3.4/hadoop-3.3.4.tar.gz &&
+          tar -xzf hadoop-3.3.4.tar.gz &&
+          mv hadoop-3.3.4 hadoop &&
+          rm hadoop-3.3.4.tar.gz &&
+          
+          # Hadoop 환경 변수 설정
+          export HADOOP_HOME=/opt/hadoop &&
+          export HADOOP_CONF_DIR=/etc/hadoop &&
+          export PATH=\$PATH:\$HADOOP_HOME/bin:\$HADOOP_HOME/sbin &&
+          
+          # .bashrc에 환경 변수 추가
+          echo 'export HADOOP_HOME=/opt/hadoop' >> ~/.bashrc &&
+          echo 'export HADOOP_CONF_DIR=/etc/hadoop' >> ~/.bashrc &&
+          echo 'export PATH=\$PATH:\$HADOOP_HOME/bin:\$HADOOP_HOME/sbin' >> ~/.bashrc &&
+          
+          echo '✓ Hadoop 클라이언트 설치 완료'
+        else
+          echo '✓ Hadoop 클라이언트 이미 설치됨'
+          export HADOOP_HOME=/opt/hadoop &&
+          export HADOOP_CONF_DIR=/etc/hadoop &&
+          export PATH=\$PATH:\$HADOOP_HOME/bin:\$HADOOP_HOME/sbin
+        fi &&
 
         # 기본 대기 시간
         echo 'Spark 마스터 준비 대기 중...' &&
