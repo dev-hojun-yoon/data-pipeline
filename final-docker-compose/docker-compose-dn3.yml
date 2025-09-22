@@ -47,36 +47,22 @@ services:
     hostname: kafka-1
     container_name: kafka-1
     depends_on:
-      zookeeper-1:
-        condition: service_healthy
+      - zookeeper-1
     ports:
       - "9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: '192.168.0.12:2189'
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT
-      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://192.168.0.12:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: EXTERNAL
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper-1:2189'
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://192.168.0.12:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
-      KAFKA_DEFAULT_REPLICATION_FACTOR: 2
-      KAFKA_MIN_IN_SYNC_REPLICAS: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_DELETE_TOPIC_ENABLE: "true"
-      KAFKA_LOG_RETENTION_HOURS: 168
-      KAFKA_LOG_SEGMENT_BYTES: 1073741824
     volumes:
       - kafka-1-data:/var/lib/kafka/data
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.11
-    healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
     restart: unless-stopped
 
   # Kafka UI
@@ -89,8 +75,8 @@ services:
       - "3030:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: hadoop-kafka-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: 192.168.0.12:9092,192.168.0.13:9093
-      KAFKA_CLUSTERS_0_ZOOKEEPER: '192.168.0.12:2189'
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: 192.168.0.12:9092,192.168.0.13:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: 'zookeeper-1:2189'
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.12
@@ -205,203 +191,64 @@ services:
     depends_on:
       - spark-master
       - kafka-1
+      - kafka-ui
     environment:
       - SPARK_MODE=submit
       - SPARK_MASTER_URL=spark://spark-master:7077
       - HADOOP_USER_NAME=hadoop
-      - HADOOP_CONF_DIR=/etc/hadoop
-      - SPARK_SUBMIT_ARGS=--class DataPipelineJob --master spark://spark-master:7077 --deploy-mode client
-      # HDFS 접근을 위한 환경 변수
-      - HDFS_NAMENODE_USER=hdfs
-      - HDFS_DATANODE_USER=hdfs
-      - HDFS_SECONDARYNAMENODE_USER=hdfs
     volumes:
-      - ./spark_producer.py:/app/spark_producer.py
-      - ./spark-libs:/opt/spark-libs
-      # Hadoop 설정 파일들을 마운트
-      - ./hadoop-conf/core-site.xml:/etc/hadoop/core-site.xml
-      - ./hadoop-conf/hdfs-site.xml:/etc/hadoop/hdfs-site.xml
-      - ./hadoop-conf/yarn-site.xml:/etc/hadoop/yarn-site.xml
-      # 테스트 스크립트 마운트
-      - ./scripts/hdfs-test.sh:/app/hdfs-test.sh
-      # 추가적인 Hadoop 라이브러리
-      - ./hadoop-libs:/opt/hadoop-libs
+      - ..:/app
+      - ../hadoop-conf:/etc/hadoop:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.15
-    # HDFS 클러스터의 모든 노드에 대한 호스트 매핑
     extra_hosts:
-      - "namenode:192.168.0.9"           # 네임노드 IP
-      - "datanode3:192.168.0.12"        # 데이터노드3 IP (현재 kafka가 있는 노드)
-      - "datanode4:192.168.0.13"        # 데이터노드4 IP
+      - "namenode:192.168.0.9"
+      - "datanode1:192.168.0.10"
+      - "datanode2:192.168.0.11"
+      - "datanode3:192.168.0.12"
+      - "datanode4:192.168.0.13"
+      - "kafka-2:192.168.0.13"
     command: >
       bash -c "
-        echo 'Spark HDFS Producer 시작...' &&
-
-        # 필요한 패키지 설치 (네트워크 도구 + Hadoop)
-        echo 'Hadoop 클라이언트 설치 중...' &&
-        apt-get update -qq && 
-        apt-get install -y -qq netcat-traditional telnet curl wget openjdk-11-jdk > /dev/null 2>&1 &&
+        echo '--- DEBUGGING: Listing contents of /app ---' && \
+        ls -l /app && \
+        echo '--- END DEBUGGING ---' && \
+        apt-get update && apt-get install -y netcat-openbsd && \
         
-        # Hadoop 다운로드 및 설치
-        if [ ! -f '/opt/hadoop/bin/hadoop' ]; then
-          echo 'Hadoop 3.3.4 다운로드 중...' &&
-          cd /opt &&
-          wget -q https://archive.apache.org/dist/hadoop/common/hadoop-3.3.4/hadoop-3.3.4.tar.gz &&
-          tar -xzf hadoop-3.3.4.tar.gz &&
-          mv hadoop-3.3.4 hadoop &&
-          rm hadoop-3.3.4.tar.gz &&
-          
-          # Hadoop 환경 변수 설정
-          export HADOOP_HOME=/opt/hadoop &&
-          export HADOOP_CONF_DIR=/etc/hadoop &&
-          export PATH=\$PATH:\$HADOOP_HOME/bin:\$HADOOP_HOME/sbin &&
-          
-          # .bashrc에 환경 변수 추가
-          echo 'export HADOOP_HOME=/opt/hadoop' >> ~/.bashrc &&
-          echo 'export HADOOP_CONF_DIR=/etc/hadoop' >> ~/.bashrc &&
-          echo 'export PATH=\$PATH:\$HADOOP_HOME/bin:\$HADOOP_HOME/sbin' >> ~/.bashrc &&
-          
-          echo '✓ Hadoop 클라이언트 설치 완료'
-        else
-          echo '✓ Hadoop 클라이언트 이미 설치됨'
-          export HADOOP_HOME=/opt/hadoop &&
-          export HADOOP_CONF_DIR=/etc/hadoop &&
-          export PATH=\$PATH:\$HADOOP_HOME/bin:\$HADOOP_HOME/sbin
-        fi &&
-
-        # 기본 대기 시간
-        echo 'Spark 마스터 준비 대기 중...' &&
-        sleep 30 &&
-
-        # 연결 테스트 함수 정의
-        test_connection() {
-          local host=$$1
-          local port=$$2
-          local service=$$3
-          echo \"테스트 중: $$service ($$host:$$port)\" 
-
-          # timeout 명령어와 함께 사용 (10초 타임아웃)
-          if timeout 10 bash -c \"cat < /dev/null > /dev/tcp/$$host/$$port\" 2>/dev/null; then
-            echo \"✓ $$service 연결 성공\" 
-            return 0
-          else
-            echo \"✗ $$service 연결 실패\" 
-            return 1
-          fi
-        } &&
-
-        # HDFS 네임노드 연결 테스트
-        echo '=== HDFS 연결 테스트 시작 ===' &&
-        max_attempts=30 &&
-        attempt=0 &&
-
-        while [ $$attempt -lt $$max_attempts ]; do
-          if test_connection namenode 9000 'HDFS NameNode'; then
-            echo 'HDFS 네임노드 연결 확인됨!'
-            break
-          fi
-
-          attempt=$$(($$attempt + 1))
-          echo \"연결 재시도 $$attempt/$$max_attempts...\" 
-          sleep 10
-        done &&
-
-        if [ $$attempt -ge $$max_attempts ]; then
-          echo '경고: HDFS 네임노드 연결 실패, 하지만 계속 진행...' 
-        fi &&
-
-        # Hadoop 설정 확인
-        echo '=== Hadoop 설정 확인 ===' &&
-        if [ -f '/etc/hadoop/core-site.xml' ]; then
-          echo '✓ core-site.xml 파일 존재' 
-          cat /etc/hadoop/core-site.xml | grep -A1 'fs.defaultFS' || echo '  fs.defaultFS 설정 확인 불가' 
-        else
-          echo '✗ core-site.xml 파일 없음' 
-        fi &&
-
-        # HDFS 파일시스템 테스트
-        echo '=== HDFS 파일시스템 테스트 ===' &&
-        if timeout 30 hadoop fs -ls / > /tmp/hdfs_test.out 2>&1; then
-          echo '✓ HDFS 루트 디렉토리 접근 성공' 
-          echo '루트 디렉토리 내용:' 
-          cat /tmp/hdfs_test.out
-        else
-          echo '✗ HDFS 루트 디렉토리 접근 실패' 
-          echo '오류 내용:' 
-          cat /tmp/hdfs_test.out 2>/dev/null || echo '오류 로그 없음'
-        fi &&
-
-        # 타겟 파일 존재 확인
-        echo '=== 타겟 파일 확인 ===' &&
-        target_file='/user/hadoop3/test.json' &&
-        if timeout 30 hadoop fs -test -e $$target_file; then
-          echo \"✓ 파일 존재: $$target_file\" 
-          echo '파일 정보:' 
-          timeout 15 hadoop fs -ls $$target_file || echo '파일 정보 조회 실패' 
-          echo '파일 크기:' 
-          timeout 15 hadoop fs -du -h $$target_file || echo '파일 크기 조회 실패' 
-        else
-          echo \"✗ 파일 없음: $$target_file\" 
-          echo '상위 디렉토리 확인:' 
-          timeout 15 hadoop fs -ls /user/hadoop3/ 2>/dev/null || echo '/user/hadoop3/ 디렉토리 접근 불가' 
-          timeout 15 hadoop fs -ls /user/ 2>/dev/null || echo '/user/ 디렉토리 접근 불가'
-        fi &&
-
-        # Kafka 연결 테스트
-        echo '=== Kafka 브로커 테스트 ===' &&
-        test_connection 192.168.0.12 9092 'Kafka Broker 1' || echo '  Kafka Broker 1 연결 실패, 계속 진행...' &&
-        test_connection 192.168.0.13 9093 'Kafka Broker 2' || echo '  Kafka Broker 2 연결 실패, 계속 진행...' &&
-
-        # Spark 작업 실행
-        echo '=== Spark 작업 시작 ===' &&
-        chmod +x /app/spark_producer.py &&
-
-        # Spark 실행 환경 정보
-        echo \"Spark 홈: $$SPARK_HOME\" &&
-        echo \"Java 홈: $$JAVA_HOME\" &&
-        echo \"Hadoop 설정 디렉토리: $$HADOOP_CONF_DIR\" &&
-
-        # 실제 Spark 작업 실행
+        echo 'Waiting for dependent services to start...' && \
+        until nc -z -w5 namenode 9000; do echo 'Waiting for HDFS namenode...'; sleep 5; done && \
+        until nc -z -w5 spark-master 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && \
+        until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1 (INTERNAL)...'; sleep 5; done && \
+        until nc -z -w5 kafka-2 9092; do echo 'Waiting for Kafka Broker 2 (EXTERNAL)...'; sleep 5; done;
+        
+        echo 'All dependent services are ready. Starting Spark job...'
+        
         spark-submit \
           --master spark://spark-master:7077 \
           --deploy-mode client \
-          --driver-memory 2g \
-          --executor-memory 2g \
-          --executor-cores 2 \
-          --num-executors 2 \
-          --jars /opt/spark-libs/kafka-clients-3.5.0.jar,/opt/spark-libs/spark-sql-kafka-0-10_2.12-3.5.0.jar \
-          --files /etc/hadoop/core-site.xml,/etc/hadoop/hdfs-site.xml \
-          --conf spark.driver.extraJavaOptions='-Dlog4j.configuration=file:/opt/bitnami/spark/conf/log4j.properties' \
-          --conf spark.executor.extraJavaOptions='-Dlog4j.configuration=file:/opt/bitnami/spark/conf/log4j.properties' \
+          --driver-memory 1g \
+          --executor-memory 1g \
+          --executor-cores 1 \
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
-          --conf spark.hadoop.dfs.client.use.datanode.hostname=false \
-          --conf spark.hadoop.dfs.datanode.use.datanode.hostname=false \
-          --conf spark.sql.adaptive.enabled=true \
-          --conf spark.sql.adaptive.coalescePartitions.enabled=true \
-          --conf spark.network.timeout=300s \
-          --conf spark.sql.execution.arrow.pyspark.enabled=false \
-          /app/spark_producer.py \
-          --json-file /user/hadoop3/test.json \
-          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9093 ;
-
-        echo 'Spark Job finished. 컨테이너는 계속 실행됩니다.' &&
-        tail -f /dev/null
+          --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
+          --conf spark.hadoop.dfs.datanode.use.datanode.hostname=true \
+          /app/spark_producer.py --json-file /user/hadoop3/test.json --kafka-brokers 192.168.0.12:9092,192.168.0.13:9092 ;
       "
-    restart: unless-stopped
+    restart: on-failure
 
 
   # Kafka to MongoDB Consumer
   kafka-mongo-consumer:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile.consumer
     container_name: kafka-mongo-consumer
     depends_on:
       - kafka-1
       - mongodb-1
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=192.168.0.12:9092,192.168.0.13:9093
+      - KAFKA_BOOTSTRAP_SERVERS=192.168.0.12:9092,192.168.0.13:9092
       - MONGO_HOST=mongodb
       - MONGO_PORT=27017
       - MONGO_DB=financial_db
