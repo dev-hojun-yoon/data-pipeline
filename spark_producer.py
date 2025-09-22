@@ -1,23 +1,35 @@
+#!/usr/bin/env python3
+
 import argparse
 import json
 import os
+import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, to_json, struct
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType, BooleanType, StructType, StructField
 import logging
 
 # 로깅 설정
-log_dir = "/app/logs"
+log_dir = "/tmp/logs"  # 컨테이너 내에서 쓰기 가능한 디렉토리로 변경
 if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
+    try:
+        os.makedirs(log_dir)
+    except Exception as e:
+        print(f"로그 디렉토리 생성 실패, 콘솔 로깅으로 대체: {e}")
+        log_dir = None
+
+# 로깅 핸들러 설정
+handlers = [logging.StreamHandler()]
+if log_dir:
+    try:
+        handlers.append(logging.FileHandler(os.path.join(log_dir, "spark_producer.log")))
+    except Exception as e:
+        print(f"파일 핸들러 추가 실패, 콘솔 로깅만 사용: {e}")
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(log_dir, "spark_producer.log")),
-        logging.StreamHandler()
-    ]
+    handlers=handlers
 )
 logger = logging.getLogger(__name__)
 
@@ -431,6 +443,11 @@ def read_json_from_hdfs(spark, hdfs_path):
         raise
 
 def main():
+    # 스크립트 시작 로깅
+    logger.info(f"Spark Producer 스크립트 시작 - Python: {sys.version}")
+    logger.info(f"작업 디렉토리: {os.getcwd()}")
+    logger.info(f"스크립트 경로: {sys.argv[0]}")
+    
     parser = argparse.ArgumentParser(
         description="Spark Kafka Producer from a JSON file on HDFS",
         epilog="Example: --json-file /input/test.json --kafka-brokers kafka:9092"
@@ -438,17 +455,24 @@ def main():
     parser.add_argument("--json-file", required=True, help="Path to the input JSON file on HDFS")
     parser.add_argument("--kafka-brokers", required=True, help="Kafka bootstrap servers")
     args = parser.parse_args()
+    
+    logger.info(f"파라미터 - JSON 파일: {args.json_file}")
+    logger.info(f"파라미터 - Kafka 브로커: {args.kafka_brokers}")
 
     # Spark 세션 생성
+    logger.info("Spark 세션 생성 시작...")
     spark = SparkSession.builder \
         .appName("JSON to Kafka Producer") \
         .config("spark.sql.adaptive.enabled", "true") \
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+        .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true") \
         .getOrCreate()
 
     logger.info("Spark 세션 생성 완료")
     logger.info(f"Spark 버전: {spark.version}")
+    logger.info(f"Spark 마스터: {spark.sparkContext.master}")
+    logger.info(f"Spark 앱 ID: {spark.sparkContext.applicationId}")
 
     try:
         topic_mapping = {
@@ -476,6 +500,8 @@ def main():
         
         # 각 파일 키에 대해 처리
         processed_topics = 0
+        failed_topics = 0
+        
         for file_key, topic in topic_mapping.items():
             if file_key in data:
                 logger.info(f"=== 처리 시작: {file_key} -> {topic} ===")
@@ -484,21 +510,36 @@ def main():
                     processed_topics += 1
                     logger.info(f"=== 처리 완료: {file_key} -> {topic} ===")
                 except Exception as e:
+                    failed_topics += 1
                     logger.error(f"토픽 {topic} 처리 중 오류: {str(e)}")
+                    import traceback
+                    logger.error(f"상세 스택트레이스: {traceback.format_exc()}")
                     continue
             else:
                 logger.warning(f"JSON 파일에 키가 없습니다: {file_key}")
         
-        logger.info(f"총 {processed_topics}개의 토픽 처리 완료")
+        logger.info(f"=== 전체 작업 완료 ===")
+        logger.info(f"성공한 토픽: {processed_topics}개")
+        logger.info(f"실패한 토픽: {failed_topics}개")
+        logger.info(f"건너뛴 토픽: {len(topic_mapping) - processed_topics - failed_topics}개")
+        
+        if processed_topics == 0:
+            logger.error("모든 토픽 처리에 실패했습니다.")
+            sys.exit(1)
+        elif failed_topics > 0:
+            logger.warning(f"{failed_topics}개 토픽 처리에 실패했지만 작업을 계속합니다.")
         
     except Exception as e:
-        logger.error(f"애플리케이션 실행 중 오류 발생: {str(e)}")
+        logger.error(f"애플리케이션 실행 중 치명적 오류 발생: {str(e)}")
         import traceback
         logger.error(f"상세 오류: {traceback.format_exc()}")
-        raise
+        sys.exit(1)
     finally:
-        spark.stop()
-        logger.info("Spark 세션 종료")
+        try:
+            spark.stop()
+            logger.info("Spark 세션 정상 종료")
+        except Exception as e:
+            logger.error(f"Spark 세션 종료 중 오류: {str(e)}")
 
 if __name__ == "__main__":
     main()

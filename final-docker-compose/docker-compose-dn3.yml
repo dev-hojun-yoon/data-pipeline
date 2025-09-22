@@ -212,29 +212,34 @@ services:
       - "kafka-2:192.168.0.13"
     command: >
       bash -c "
-        echo '--- DEBUGGING: Listing contents of /opt/bitnami/spark/work ---' && \
-        ls -l /opt/bitnami/spark/work && \
+        echo '--- DEBUGGING: Checking job_script.py ---' && \
+        ls -la /opt/bitnami/spark/work/job_script.py && \
+        file /opt/bitnami/spark/work/job_script.py && \
+        head -5 /opt/bitnami/spark/work/job_script.py && \
         echo '--- END DEBUGGING ---' && \
-        apt-get update && apt-get install -y netcat-openbsd && \
         
         echo 'Waiting for dependent services to start...' && \
         until nc -z -w5 namenode 9000; do echo 'Waiting for HDFS namenode...'; sleep 5; done && \
         until nc -z -w5 spark-master 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && \
         until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1 (INTERNAL)...'; sleep 5; done && \
-        until nc -z -w5 kafka-2 9092; do echo 'Waiting for Kafka Broker 2 (EXTERNAL)...'; sleep 5; done;
+        until nc -z -w5 kafka-2 9092; do echo 'Waiting for Kafka Broker 2 (EXTERNAL)...'; sleep 5; done &&
         
-        echo 'All dependent services are ready. Starting Spark job...'
+        echo 'All dependent services are ready. Starting Spark job...' && \
         
-        spark-submit \
+        /opt/bitnami/spark/bin/spark-submit \
           --master spark://spark-master:7077 \
           --deploy-mode client \
           --driver-memory 1g \
           --executor-memory 1g \
           --executor-cores 1 \
+          --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
           --conf spark.hadoop.dfs.datanode.use.datanode.hostname=true \
-          /opt/bitnami/spark/work/job_script.py --json-file /user/hadoop3/test.json --kafka-brokers 192.168.0.12:9092,192.168.0.13:9092 ;
+          --conf spark.sql.streaming.forceDeleteTempCheckpointLocation=true \
+          /opt/bitnami/spark/work/job_script.py \
+          --json-file /user/hadoop3/test.json \
+          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9092
       "
     restart: on-failure
 

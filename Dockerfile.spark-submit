@@ -1,0 +1,28 @@
+FROM bitnami/spark:3.5
+
+# 루트 권한으로 필요한 패키지 설치
+USER root
+
+# apt 패키지 목록 디렉토리 생성 및 패키지 업데이트
+RUN mkdir -p /var/lib/apt/lists/partial && \
+    apt-get update && \
+    apt-get install -y netcat-openbsd && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# 작업 디렉토리 생성 및 권한 설정
+RUN mkdir -p /opt/bitnami/spark/work && \
+    chown -R 1001:0 /opt/bitnami/spark/work
+
+# Spark 사용자로 다시 변경
+USER 1001
+
+# Python 스크립트 복사 (파일로 복사되도록 명시)
+COPY spark_producer.py /opt/bitnami/spark/work/job_script.py
+
+# 실행 권한 부여
+USER root
+RUN chmod +x /opt/bitnami/spark/work/job_script.py && \
+    chown 1001:0 /opt/bitnami/spark/work/job_script.py
+
+USER 1001
