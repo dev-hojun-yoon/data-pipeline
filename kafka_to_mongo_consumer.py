@@ -5,8 +5,8 @@ Kafka에서 데이터를 구독하여 MongoDB에 저장하는 Consumer
 
 import json
 import os
-from kafka import KafkaConsumer
-from kafka.errors import NoBrokersAvailable
+from kafka import KafkaConsumer, KafkaProducer
+from kafka.errors import NoBrokersAvailable, KafkaError
 from pymongo import MongoClient, ASCENDING
 from pymongo.errors import DuplicateKeyError, BulkWriteError
 import logging
@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 class KafkaToMongoConsumer:
     def __init__(self, kafka_hosts='kafka:29092', mongo_host='mongodb',
                  mongo_port=27017, mongo_db='financial_db',
-                 mongo_user=None, mongo_password=None, batch_size=100):
+                 mongo_user=None, mongo_password=None, batch_size=100,
+                 dlq_topic_suffix='_dlq'):
         """
         Kafka to MongoDB Consumer 초기화
         """
@@ -46,7 +47,8 @@ class KafkaToMongoConsumer:
         self.mongo_db_name = mongo_db
         self.batch_size = batch_size
         self.shutdown_flag = threading.Event()
-        
+        self.dlq_topic_suffix = dlq_topic_suffix
+
         # MongoDB 연결
         self.mongo_client = MongoClient(
             mongo_host,
@@ -56,7 +58,20 @@ class KafkaToMongoConsumer:
             authSource='admin'
         )
         self.db = self.mongo_client[mongo_db]
-        
+
+        # DLQ를 위한 Kafka Producer 생성
+        try:
+            self.dlq_producer = KafkaProducer(
+                bootstrap_servers=self.kafka_hosts,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                acks='all',
+                retries=3
+            )
+            logger.info("DLQ용 Kafka Producer 생성 완료")
+        except NoBrokersAvailable:
+            logger.error("DLQ용 Kafka Producer 생성 실패: 브로커에 연결할 수 없습니다.")
+            raise
+
         # 토픽과 컬렉션 매핑
         self.topic_collection_mapping = {
             'financial_numbers': 'num_data',
@@ -183,45 +198,86 @@ class KafkaToMongoConsumer:
             consumer_timeout_ms=10000,
             max_poll_records=500
         )
-    
+
+    def send_to_dlq(self, topic, failed_message, error):
+        """처리 실패한 메시지를 DLQ 토픽으로 전송"""
+        dlq_topic = f"{topic}{self.dlq_topic_suffix}"
+        dlq_message = {
+            'original_topic': topic,
+            'message_payload': failed_message.value,
+            'kafka_metadata': {
+                'partition': failed_message.partition,
+                'offset': failed_message.offset,
+                'timestamp': failed_message.timestamp,
+                'key': failed_message.key.decode('utf-8') if failed_message.key else None
+            },
+            'error_details': str(error),
+            'failed_at': datetime.now().isoformat()
+        }
+        try:
+            future = self.dlq_producer.send(dlq_topic, value=dlq_message)
+            future.get(timeout=10) # 블로킹으로 전송 확인
+            logger.warning(f"메시지를 DLQ 토픽 {dlq_topic}으로 전송했습니다.")
+        except KafkaError as e:
+            logger.error(f"DLQ 전송 실패: {str(e)}")
+
     def process_messages_batch(self, messages, topic):
-        """메시지 배치 처리"""
+        """메시지 배치 처리 (DLQ 로직 포함)"""
         if not messages:
             return 0
-        try:
-            collection_name = self.topic_collection_mapping.get(topic)
-            if not collection_name:
-                logger.warning(f"알 수 없는 토픽: {topic}")
-                return 0
-            collection = self.db[collection_name]
-            processor = self.data_processors.get(topic, lambda x: x)
-            documents = []
-            for message in messages:
-                try:
-                    raw_data = message.value
-                    processed_data = processor(raw_data)
-                    processed_data['created_at'] = datetime.now()
-                    processed_data['kafka_metadata'] = {
-                        'topic': message.topic,
-                        'partition': message.partition,
-                        'offset': message.offset,
-                        'timestamp': message.timestamp
-                    }
-                    documents.append(processed_data)
-                except Exception as e:
-                    logger.error(f"메시지 처리 실패: {str(e)}, Message: {message.value}")
-            if documents:
-                try:
-                    result = collection.insert_many(documents, ordered=False)
-                    logger.info(f"{topic}: {len(result.inserted_ids)}개 문서 삽입 완료")
-                    return len(result.inserted_ids)
-                except BulkWriteError as e:
-                    inserted_count = e.details.get('nInserted', 0)
-                    logger.warning(f"{topic}: {inserted_count}개 삽입, {len(e.details.get('writeErrors', []))}개 오류")
-                    return inserted_count
+        
+        collection_name = self.topic_collection_mapping.get(topic)
+        if not collection_name:
+            logger.warning(f"알 수 없는 토픽: {topic}")
+            for msg in messages:
+                self.send_to_dlq(topic, msg, "Unknown topic")
             return 0
+        
+        collection = self.db[collection_name]
+        processor = self.data_processors.get(topic, lambda x: x)
+        documents = []
+        
+        for message in messages:
+            try:
+                raw_data = message.value
+                # 데이터 처리 (파싱 및 타입 변환)
+                processed_data = processor(raw_data)
+                
+                # 메타데이터 추가
+                processed_data['created_at'] = datetime.now()
+                processed_data['kafka_metadata'] = {
+                    'topic': message.topic,
+                    'partition': message.partition,
+                    'offset': message.offset,
+                    'timestamp': message.timestamp
+                }
+                documents.append(processed_data)
+            except Exception as e:
+                logger.error(f"메시지 처리 실패 (DLQ로 전송): {str(e)}, Message: {message.value}")
+                self.send_to_dlq(topic, message, e)
+
+        if not documents:
+            return 0
+
+        try:
+            result = collection.insert_many(documents, ordered=False)
+            logger.info(f"{topic}: {len(result.inserted_ids)}개 문서 삽입 완료")
+            return len(result.inserted_ids)
+        except BulkWriteError as e:
+            # 중복 키 오류가 아닌 다른 쓰기 오류가 있는 경우, 해당 문서를 DLQ로 보낼 수 있음
+            # 여기서는 우선 삽입된 개수만 로깅하고 넘어감
+            inserted_count = e.details.get('nInserted', 0)
+            write_errors = e.details.get('writeErrors', [])
+            logger.warning(f"{topic}: {inserted_count}개 삽입, {len(write_errors)}개 쓰기 오류 발생")
+            # 상세 오류 로깅
+            for err in write_errors[:3]: # 처음 3개 오류만 로깅
+                logger.debug(f"  오류 코드 {err['code']}: {err['errmsg']}")
+            return inserted_count
         except Exception as e:
-            logger.error(f"배치 처리 실패 - Topic: {topic}, Error: {str(e)}")
+            logger.error(f"배치 삽입 실패 - Topic: {topic}, Error: {str(e)}")
+            # 삽입 실패한 모든 문서를 DLQ로 보낼 수 있음
+            for doc, msg in zip(documents, messages):
+                self.send_to_dlq(topic, msg, e)
             return 0
     
     def consume_topic(self, topic):
@@ -273,6 +329,10 @@ class KafkaToMongoConsumer:
         """정상 종료"""
         logger.info("Consumer 종료 중...")
         self.shutdown_flag.set()
+        if self.dlq_producer:
+            self.dlq_producer.flush()
+            self.dlq_producer.close()
+            logger.info("DLQ Producer 종료 완료")
         self.mongo_client.close()
         logger.info("Consumer 종료 완료")
 
