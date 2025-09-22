@@ -340,8 +340,20 @@ def process_and_send(spark, kafka_bootstrap_servers, topic, tsv_data, schema):
 
         # Kafka로 전송할 JSON 형태로 변환
         logger.info(f"토픽 {topic}: JSON 변환 시작...")
-        kafka_df = df.select(to_json(struct([col(c) for c in df.columns])).alias("value"))
         
+        # 'adsh' 컬럼이 있으면 key로 사용, 없으면 key 없이 전송
+        if "adsh" in df.columns:
+            logger.info(f"토픽 {topic}: adsh를 Kafka 메시지 키로 사용합니다.")
+            kafka_df = df.select(
+                col("adsh").alias("key"),
+                to_json(struct([col(c) for c in df.columns])).alias("value")
+            )
+        else:
+            logger.info(f"토픽 {topic}: adsh 컬럼이 없어 키 없이 메시지를 전송합니다.")
+            kafka_df = df.select(
+                to_json(struct([col(c) for c in df.columns])).alias("value")
+            )
+
         # JSON 변환 결과 샘플 확인
         try:
             json_samples = kafka_df.limit(2).collect()
@@ -354,9 +366,8 @@ def process_and_send(spark, kafka_bootstrap_servers, topic, tsv_data, schema):
                 try:
                     parsed = json.loads(json_str)
                     logger.info(f"  JSON 파싱 성공, 필드 수: {len(parsed)}")
-                    # 첫 번째 샘플의 키-값 쌍 출력
                     if i == 1:
-                        sample_fields = list(parsed.items())[:3]  # 처음 3개 필드만
+                        sample_fields = list(parsed.items())[:3]
                         logger.info(f"  샘플 필드: {sample_fields}")
                 except json.JSONDecodeError as e:
                     logger.error(f"  JSON 파싱 실패: {str(e)}")
@@ -366,14 +377,20 @@ def process_and_send(spark, kafka_bootstrap_servers, topic, tsv_data, schema):
 
         # Kafka에 데이터 쓰기
         logger.info(f"토픽 {topic}: Kafka로 데이터 전송 시작...")
-        kafka_df.write \
+        kafka_writer = kafka_df.write \
             .format("kafka") \
             .option("kafka.bootstrap.servers", kafka_bootstrap_servers) \
             .option("topic", topic) \
             .option("kafka.retries", "3") \
             .option("kafka.acks", "all") \
-            .option("kafka.max.request.size", "10485760") \
-            .save()
+            .option("kafka.max.request.size", "10485760")
+        
+        # key가 있는 경우, kafka producer가 key를 사용하도록 설정
+        if "key" in kafka_df.columns:
+            # key.serializer는 기본적으로 string serializer를 사용합니다.
+            pass
+
+        kafka_writer.save()
         
         final_count = df.count()
         logger.info(f"토픽 '{topic}'으로 {final_count}건의 데이터 전송 완료")
