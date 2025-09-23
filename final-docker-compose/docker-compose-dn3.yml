@@ -202,7 +202,6 @@ services:
       context: .
       dockerfile: Dockerfile.spark-submit
     container_name: spark-submit-job
-    hostname: spark-driver
     depends_on:
       - spark-master
       - kafka-1
@@ -243,7 +242,7 @@ services:
           --executor-memory 1g \
           --executor-cores 1 \
           --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
-          --conf spark.driver.host=spark-driver \
+          --files /etc/hadoop/core-site.xml,/etc/hadoop/hdfs-site.xml \
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
           --conf spark.hadoop.dfs.datanode.use.datanode.hostname=true \

@@ -153,18 +153,11 @@ services:
       - spark-worker-logs:/opt/bitnami/spark/logs
       - ./spark-jobs:/opt/spark-jobs
       - ./spark-libs:/opt/spark-libs
-      - ./hadoop-conf:/etc/hadoop:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.2.14
     extra_hosts:
-      - "spark-master:192.168.0.12"
-      - "namenode:192.168.0.9"
-      - "datanode1:192.168.0.10"
-      - "datanode2:192.168.0.11"
-      - "datanode3:192.168.0.12"
-      - "datanode4:192.168.0.13"
-      - "spark-driver:172.20.1.15"
+      - "spark-master:172.20.1.14"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081"]
       interval: 30s
