@@ -26,8 +26,6 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2189
       ZOOKEEPER_TICK_TIME: 2000
-      ZOOKEEPER_SERVER_ID: 1
-      ZOOKEEPER_SERVERS: zookeeper-1:2888:3888
     volumes:
       - zookeeper-1-data:/var/lib/zookeeper/data
       - zookeeper-1-logs:/var/lib/zookeeper/log
@@ -47,17 +45,26 @@ services:
     hostname: kafka-1
     container_name: kafka-1
     depends_on:
-      - zookeeper-1
+      zookeeper-1:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper-1:2189'
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://192.168.0.12:9092
+      KAFKA_ZOOKEEPER_CONNECT: '172.20.1.10:2189'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9093,EXTERNAL://192.168.0.12:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 2
+      KAFKA_MIN_IN_SYNC_REPLICAS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_DELETE_TOPIC_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
     volumes:
       - kafka-1-data:/var/lib/kafka/data
     networks:
@@ -117,26 +124,26 @@ services:
           MONGO_PID=$${!} 
           
           # MongoDB 준비 대기
-          echo 'Waiting for MongoDB to start...' 
+          echo 'Waiting for MongoDB to start...'
           until mongosh --port 27017 --eval 'db.runCommand({ping: 1})' > /dev/null 2>&1; do
             sleep 2
           done
           
           echo 'Creating admin user...' 
-          mongosh --port 27017 --eval "db.getSiblingDB('admin').createUser({user: '$${MONGO_INITDB_ROOT_USERNAME}', pwd: '$${MONGO_INITDB_ROOT_PASSWORD}', roles: [{role: 'root', db: 'admin'}]})"
+          mongosh --port 27017 --eval "db.getSiblingDB('admin').createUser({user: '${MONGO_INITDB_ROOT_USERNAME}', pwd: '${MONGO_INITDB_ROOT_PASSWORD}', roles: [{role: 'root', db: 'admin'}]})"
           
           echo 'Creating application database and user...' 
           mongosh --port 27017 --eval "db.getSiblingDB('$${MONGO_INITDB_DATABASE}').createUser({user: 'app_user', pwd: 'app_password', roles: [{role: 'readWrite', db: '$${MONGO_INITDB_DATABASE}'}]})"
 
           echo 'Forcing database creation by creating a placeholder collection...' 
-          mongosh --port 27017 --eval "db.getSiblingDB('$${MONGO_INITDB_DATABASE}').createCollection('placeholder')"
+          mongosh --port 27017 --eval "db.getSiblingDB('$${MONGO_INITDB_DATABASE}').createCollection('placeholder')" 
           
           # 초기화 완료 표시
           touch /data/db/.mongodb_initialized
           
           # MongoDB 종료 (인증 사용)
           echo 'Shutting down MongoDB with authentication...' 
-          mongosh --port 27017 -u '$${MONGO_INITDB_ROOT_USERNAME}' -p '$${MONGO_INITDB_ROOT_PASSWORD}' --authenticationDatabase 'admin' --eval 'db.getSiblingDB("admin").shutdownServer()' || true
+          mongosh --port 27017 -u '${MONGO_INITDB_ROOT_USERNAME}' -p '${MONGO_INITDB_ROOT_PASSWORD}' --authenticationDatabase 'admin' --eval 'db.getSiblingDB("admin").shutdownServer()' || true
           wait $${MONGO_PID}
         fi
         
@@ -187,7 +194,7 @@ services:
   # Spark Job Submitter - HDFS에서 데이터 읽기 및 Kafka 전송
   spark-submit-job:
     build:
-      context: ..
+      context: .
       dockerfile: Dockerfile.spark-submit
     container_name: spark-submit-job
     depends_on:
@@ -212,16 +219,16 @@ services:
       - "kafka-2:192.168.0.13"
     command: >
       bash -c "
-        echo '--- 파일 상태 확인 ---' && \
-        ls -la /opt/bitnami/spark/work/job_script.py && \
-        python3 /opt/bitnami/spark/work/job_script.py --help && \
-        echo '--- 의존성 서비스 대기 ---' && \
-        until nc -z -w5 namenode 9000; do echo 'Waiting for HDFS namenode...'; sleep 5; done && \
-        until nc -z -w5 spark-master 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && \
-        until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1...'; sleep 5; done && \
+        echo '--- 파일 상태 확인 ---' && 
+        ls -la /opt/bitnami/spark/work/job_script.py && 
+        python3 /opt/bitnami/spark/work/job_script.py --help && 
+        echo '--- 의존성 서비스 대기 ---' && 
+        until nc -z -w5 namenode 9000; do echo 'Waiting for HDFS namenode...'; sleep 5; done && 
+        until nc -z -w5 spark-master 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && 
+        until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1...'; sleep 5; done && 
         until nc -z -w5 kafka-2 9092; do echo 'Waiting for Kafka Broker 2...'; sleep 5; done &&
         
-        echo 'All services ready. Starting Spark job...' && \
+        echo 'All services ready. Starting Spark job...' && 
         
         /opt/bitnami/spark/bin/spark-submit \
           --master spark://spark-master:7077 \
