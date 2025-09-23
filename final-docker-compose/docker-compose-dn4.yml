@@ -21,12 +21,14 @@ services:
     hostname: kafka-2
     container_name: kafka-2
     ports:
-      - "9092:9092"
+      - "9093:9093"
     environment:
       KAFKA_BROKER_ID: 2
       KAFKA_ZOOKEEPER_CONNECT: '192.168.0.12:2189'
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://192.168.0.13:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://192.168.0.13:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: EXTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
@@ -42,7 +44,7 @@ services:
       hadoop-network:
         ipv4_address: 172.20.2.11
     healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9093", "--list"]
       interval: 30s
       timeout: 10s
       retries: 5
