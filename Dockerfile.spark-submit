@@ -10,14 +10,23 @@ RUN mkdir -p /var/lib/apt/lists/partial && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# 임시 디렉토리에 먼저 복사
-COPY spark_producer.py /tmp/spark_producer.py
-
-# 작업 디렉토리 생성 및 기존 파일/디렉토리 정리
+# 작업 디렉토리 생성 및 기존 파일/디렉토리 완전 정리
 RUN mkdir -p /opt/bitnami/spark/work && \
-    rm -rf /opt/bitnami/spark/work/job_script.py && \
-    cp /tmp/spark_producer.py /opt/bitnami/spark/work/job_script.py && \
-    rm /tmp/spark_producer.py
+    rm -rf /opt/bitnami/spark/work/* && \
+    chown -R 1001:0 /opt/bitnami/spark/work
+
+# 직접 대상 파일 위치로 복사 (파일명을 명시적으로 지정)
+COPY spark_producer.py /opt/bitnami/spark/work/
+RUN ls -al /opt/bitnami/spark/work/
+RUN mv /opt/bitnami/spark/work/spark_producer.py /opt/bitnami/spark/work/job_script.py
+
+# 혹시 디렉토리로 복사된 경우를 대비한 처리
+RUN if [ -d "/opt/bitnami/spark/work/job_script.py" ]; then \
+        echo "디렉토리로 복사됨, 수정 중..." && \
+        cp /opt/bitnami/spark/work/job_script.py/spark_producer.py /opt/bitnami/spark/work/temp_script.py && \
+        rm -rf /opt/bitnami/spark/work/job_script.py && \
+        mv /opt/bitnami/spark/work/temp_script.py /opt/bitnami/spark/work/job_script.py; \
+    fi
 
 # 권한 설정
 RUN chmod 755 /opt/bitnami/spark/work/job_script.py && \
@@ -29,6 +38,8 @@ RUN echo "=== 최종 파일 확인 ===" && \
     file /opt/bitnami/spark/work/job_script.py && \
     echo "=== 파일 내용 확인 (첫 5줄) ===" && \
     head -5 /opt/bitnami/spark/work/job_script.py && \
+    echo "=== 파일 크기 ===" && \
+    wc -l /opt/bitnami/spark/work/job_script.py && \
     echo "=== Python 문법 체크 ===" && \
     python3 -m py_compile /opt/bitnami/spark/work/job_script.py && \
     echo "Python 문법 체크 통과"
