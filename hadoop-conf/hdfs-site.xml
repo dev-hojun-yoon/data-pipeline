@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<configuration>
+    <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:///opt/hadoop/logs/namenode</value>
+        <description>Directory for namenode metadata</description>
+    </property>
+    <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>file:///opt/hadoop/logs/datanode</value>
+        <description>Directory for datanode data</description>
+    </property>
+    <property>
+        <name>dfs.replication</name>
+        <value>3</value>
+        <description>Default replication factor</description>
+    </property>
+    <property>
+        <name>dfs.blocksize</name>
+        <value>268435456</value>
+        <description>HDFS block size (256MB)</description>
+    </property>
+    <property>
+        <name>dfs.client.use.datanode.hostname</name>
+        <value>false</value>
+        <description>Use IP address instead of hostname for datanode communication</description>
+    </property>
+    <property>
+        <name>dfs.datanode.use.datanode.hostname</name>
+        <value>false</value>
+        <description>Use IP address instead of hostname</description>
+    </property>
+    <property>
+        <name>dfs.namenode.rpc-address</name>
+        <value>192.168.0.9:9000</value>
+        <description>NameNode RPC address</description>
+    </property>
+    <property>
+        <name>dfs.namenode.http-address</name>
+        <value>192.168.0.9:9870</value>
+        <description>NameNode HTTP address</description>
+    </property>
+</configuration>
