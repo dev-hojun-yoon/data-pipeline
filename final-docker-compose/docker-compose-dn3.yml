@@ -231,7 +231,7 @@ services:
         until nc -z -w5 namenode 9000; do echo 'Waiting for HDFS namenode...'; sleep 5; done && 
         until nc -z -w5 spark-master 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && 
         until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1...'; sleep 5; done && 
-        until nc -z -w5 kafka-2 9092; do echo 'Waiting for Kafka Broker 2...'; sleep 5; done &&
+        until nc -z -w5 kafka-2 9093; do echo 'Waiting for Kafka Broker 2...'; sleep 5; done &&
         
         echo 'All services ready. Starting Spark job...' && 
         
