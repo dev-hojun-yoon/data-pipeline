@@ -1,8 +1,23 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<?xml version="1.0"?>
 <configuration>
     <property>
         <name>fs.defaultFS</name>
-        <value>hdfs://namenode:9000</value>
+        <value>hdfs://192.168.0.9:9000</value>
+        <description>Default filesystem URI with IP address</description>
+    </property>
+    <property>
+        <name>hadoop.tmp.dir</name>
+        <value>/tmp/hadoop</value>
+        <description>Base for other temporary directories</description>
+    </property>
+    <property>
+        <name>io.file.buffer.size</name>
+        <value>131072</value>
+        <description>Size of read/write buffer used in SequenceFiles</description>
+    </property>
+    <property>
+        <name>fs.hdfs.impl</name>
+        <value>org.apache.hadoop.hdfs.DistributedFileSystem</value>
+        <description>HDFS implementation class</description>
     </property>
 </configuration>

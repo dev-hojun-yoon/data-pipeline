@@ -135,7 +135,7 @@ services:
           done
           
           echo 'Creating admin user...' 
-          mongosh --port 27017 --eval "db.getSiblingDB('admin').createUser({user: '${MONGO_INITDB_ROOT_USERNAME}', pwd: '${MONGO_INITDB_ROOT_PASSWORD}', roles: [{role: 'root', db: 'admin'}]})"
+          mongosh --port 27017 --eval "db.getSiblingDB('admin').createUser({user: '$${MONGO_INITDB_ROOT_USERNAME}', pwd: '$${MONGO_INITDB_ROOT_PASSWORD}', roles: [{role: 'root', db: 'admin'}]})"
           
           echo 'Creating application database and user...' 
           mongosh --port 27017 --eval "db.getSiblingDB('$${MONGO_INITDB_DATABASE}').createUser({user: 'app_user', pwd: 'app_password', roles: [{role: 'readWrite', db: '$${MONGO_INITDB_DATABASE}'}]})"
@@ -148,7 +148,7 @@ services:
           
           # MongoDB 종료 (인증 사용)
           echo 'Shutting down MongoDB with authentication...' 
-          mongosh --port 27017 -u '${MONGO_INITDB_ROOT_USERNAME}' -p '${MONGO_INITDB_ROOT_PASSWORD}' --authenticationDatabase 'admin' --eval 'db.getSiblingDB("admin").shutdownServer()' || true
+          mongosh --port 27017 -u '$${MONGO_INITDB_ROOT_USERNAME}' -p '$${MONGO_INITDB_ROOT_PASSWORD}' --authenticationDatabase 'admin' --eval 'db.getSiblingDB("admin").shutdownServer()' || true
           wait $${MONGO_PID}
         fi
         
@@ -202,6 +202,7 @@ services:
       context: .
       dockerfile: Dockerfile.spark-submit
     container_name: spark-submit-job
+    hostname: spark-driver
     depends_on:
       - spark-master
       - kafka-1
@@ -211,7 +212,7 @@ services:
       - SPARK_MASTER_URL=spark://spark-master:7077
       - HADOOP_USER_NAME=hadoop
     volumes:
-      - ../hadoop-conf:/etc/hadoop:ro
+      - ./hadoop-conf:/etc/hadoop:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.15
@@ -242,6 +243,7 @@ services:
           --executor-memory 1g \
           --executor-cores 1 \
           --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
+          --conf spark.driver.host=spark-driver \
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
           --conf spark.hadoop.dfs.datanode.use.datanode.hostname=true \
