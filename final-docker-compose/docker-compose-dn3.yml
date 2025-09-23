@@ -248,7 +248,7 @@ services:
           --conf spark.sql.streaming.forceDeleteTempCheckpointLocation=true \
           /opt/bitnami/spark/work/job_script.py \
           --json-file /user/hadoop3/test.json \
-          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9092
+          --kafka-brokers 192.168.0.12:9092,192.168.0.13:9093
       "
     restart: on-failure
 
@@ -263,7 +263,7 @@ services:
       - kafka-1
       - mongodb-1
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=192.168.0.12:9092,192.168.0.13:9092
+      - KAFKA_BOOTSTRAP_SERVERS=192.168.0.12:9092,192.168.0.13:9093
       - MONGO_HOST=mongodb
       - MONGO_PORT=27017
       - MONGO_DB=financial_db
