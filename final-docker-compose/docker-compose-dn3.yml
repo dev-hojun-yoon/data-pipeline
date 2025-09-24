@@ -210,6 +210,9 @@ services:
       context: .
       dockerfile: Dockerfile.spark-submit
     container_name: spark-submit-job
+    ports:
+      - "7001:7001"
+      - "7005:7005"
     depends_on:
       - spark-master
       - kafka-1
@@ -259,6 +262,7 @@ services:
           --conf spark.driver.host=192.168.0.12 \
           --conf spark.driver.port=7001 \
           --conf spark.driver.bindAddress=0.0.0.0 \
+          --conf spark.driver.blockManager.port=7005 \
           --conf spark.executor.instances=2 \
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
