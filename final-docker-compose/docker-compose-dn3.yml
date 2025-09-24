@@ -172,20 +172,23 @@ services:
     image: bitnami/spark:3.5
     hostname: spark-master
     container_name: spark-master
+    ports:
+      - "8081:8081"
+      - "7077:7077"
     environment:
       - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
-      - SPARK_USER=spark
-      - SPARK_LOCAL_IP=192.168.0.12
-      - SPARK_MASTER_WEBUI_PORT=8081
+    command: >
+      /opt/bitnami/spark/bin/spark-class -Dspark.public.dns=192.168.0.12 org.apache.spark.deploy.master.Master
+      --host 0.0.0.0
+      --port 7077
+      --webui-port 8081
     volumes:
       - spark-master-logs:/opt/bitnami/spark/logs
       - ./spark-jobs:/opt/spark-jobs
       - ./spark-libs:/opt/spark-libs
-    network_mode: host
+    networks:
+      hadoop-network:
+        ipv4_address: 172.20.1.14
     extra_hosts:
       - "namenode:192.168.0.9"
       - "datanode1:192.168.0.10"
@@ -193,6 +196,7 @@ services:
       - "datanode3:192.168.0.12"
       - "datanode4:192.168.0.13"
       - "kafka-2:192.168.0.13"
+      - "spark-worker:192.168.0.13"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081"]
       interval: 30s
@@ -212,21 +216,25 @@ services:
       - kafka-ui
     environment:
       - SPARK_MODE=submit
-      - SPARK_MASTER_URL=spark://spark-master:7077
+      # 실제 VM IP 사용
+      - SPARK_MASTER_URL=spark://192.168.0.12:7077
       - HADOOP_USER_NAME=hadoop
+      # 드라이버 호스트 명시
+      - SPARK_DRIVER_HOST=192.168.0.12
     volumes:
       - ./hadoop-conf:/etc/hadoop:ro
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.15
     extra_hosts:
-      - "spark-master:192.168.0.12"
       - "namenode:192.168.0.9"
       - "datanode1:192.168.0.10"
       - "datanode2:192.168.0.11"
       - "datanode3:192.168.0.12"
       - "datanode4:192.168.0.13"
       - "kafka-2:192.168.0.13"
+      - "spark-worker:192.168.0.13"
+      - "spark-master:192.168.0.12"
     command: >
       bash -c "
         echo '--- 파일 상태 확인 ---' && 
@@ -234,20 +242,24 @@ services:
         python3 /opt/bitnami/spark/work/job_script.py --help && 
         echo '--- 의존성 서비스 대기 ---' && 
         until nc -z -w5 namenode 9000; do echo 'Waiting for HDFS namenode...'; sleep 5; done && 
-        until nc -z -w5 spark-master 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && 
+        until nc -z -w5 192.168.0.12 7077; do echo 'Waiting for Spark Master...'; sleep 5; done && 
         until nc -z -w5 kafka-1 9092; do echo 'Waiting for Kafka Broker 1...'; sleep 5; done && 
-        until nc -z -w5 kafka-2 9093; do echo 'Waiting for Kafka Broker 2...'; sleep 5; done &&
+        until nc -z -w5 192.168.0.13 9093; do echo 'Waiting for Kafka Broker 2...'; sleep 5; done &&
         
         echo 'All services ready. Starting Spark job...' && 
         
         /opt/bitnami/spark/bin/spark-submit \
-          --master spark://spark-master:7077 \
+          --master spark://192.168.0.12:7077 \
           --deploy-mode client \
           --driver-memory 1g \
           --executor-memory 1g \
           --executor-cores 1 \
           --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
           --files /etc/hadoop/core-site.xml,/etc/hadoop/hdfs-site.xml \
+          --conf spark.driver.host=192.168.0.12 \
+          --conf spark.driver.port=7001 \
+          --conf spark.driver.bindAddress=0.0.0.0 \
+          --conf spark.executor.instances=2 \
           --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
           --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
           --conf spark.hadoop.dfs.datanode.use.datanode.hostname=true \
