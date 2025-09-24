@@ -92,7 +92,7 @@ services:
       retries: 3
     restart: unless-stopped
 
-# MongoDB Arbiter (투표 전용 노드)
+  # MongoDB Arbiter (투표 전용 노드)
   mongodb-arbiter:
     image: mongo:7.0
     hostname: mongodb-arbiter
@@ -136,8 +136,6 @@ services:
     image: bitnami/spark:3.5
     hostname: spark-worker
     container_name: spark-worker
-    ports:
-      - "8082:8081"
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
@@ -149,17 +147,23 @@ services:
       - SPARK_SSL_ENABLED=no
       - SPARK_USER=spark
       - HADOOP_USER_NAME=hadoop
+      - SPARK_LOCAL_IP=192.168.0.13
+      - SPARK_WORKER_WEBUI_PORT=8082
     volumes:
       - spark-worker-logs:/opt/bitnami/spark/logs
       - ./spark-jobs:/opt/spark-jobs
       - ./spark-libs:/opt/spark-libs
-    networks:
-      hadoop-network:
-        ipv4_address: 172.20.2.14
+    network_mode: host
     extra_hosts:
-      - "spark-master:172.20.1.14"
+      - "spark-master:192.168.0.12"
+      - "namenode:192.168.0.9"
+      - "datanode1:192.168.0.10"
+      - "datanode2:192.168.0.11"
+      - "datanode3:192.168.0.12"
+      - "datanode4:192.168.0.13"
+      - "kafka-2:192.168.0.13"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081"]
+      test: ["CMD", "curl", "-f", "http://localhost:8082"]
       interval: 30s
       timeout: 10s
       retries: 3

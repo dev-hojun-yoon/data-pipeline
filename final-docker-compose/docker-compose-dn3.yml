@@ -172,9 +172,6 @@ services:
     image: bitnami/spark:3.5
     hostname: spark-master
     container_name: spark-master
-    ports:
-      - "8081:8080"
-      - "7077:7077"
     environment:
       - SPARK_MODE=master
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
@@ -182,15 +179,22 @@ services:
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
       - SPARK_USER=spark
+      - SPARK_LOCAL_IP=192.168.0.12
+      - SPARK_MASTER_WEBUI_PORT=8081
     volumes:
       - spark-master-logs:/opt/bitnami/spark/logs
       - ./spark-jobs:/opt/spark-jobs
       - ./spark-libs:/opt/spark-libs
-    networks:
-      hadoop-network:
-        ipv4_address: 172.20.1.14
+    network_mode: host
+    extra_hosts:
+      - "namenode:192.168.0.9"
+      - "datanode1:192.168.0.10"
+      - "datanode2:192.168.0.11"
+      - "datanode3:192.168.0.12"
+      - "datanode4:192.168.0.13"
+      - "kafka-2:192.168.0.13"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      test: ["CMD", "curl", "-f", "http://localhost:8081"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -216,6 +220,7 @@ services:
       hadoop-network:
         ipv4_address: 172.20.1.15
     extra_hosts:
+      - "spark-master:192.168.0.12"
       - "namenode:192.168.0.9"
       - "datanode1:192.168.0.10"
       - "datanode2:192.168.0.11"
@@ -252,7 +257,6 @@ services:
           --kafka-brokers 192.168.0.12:9092,192.168.0.13:9093
       "
     restart: on-failure
-
 
   # Kafka to MongoDB Consumer
   kafka-mongo-consumer:
@@ -354,4 +358,4 @@ services:
         "
         
         echo 'MongoDB cluster initialization completed'
-    restart: "no"  # 일회성 실행
+    restart: "no"
