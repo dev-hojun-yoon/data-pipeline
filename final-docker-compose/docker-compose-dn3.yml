@@ -284,15 +284,12 @@ services:
       - kafka-1
       - mongodb-1
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=192.168.0.12:9092,192.168.0.13:9093
-      - MONGO_HOST=mongodb
+      - KAFKA_HOSTS=192.168.0.12:9092,192.168.0.13:9093
+      - MONGO_HOST=mongodb-1
       - MONGO_PORT=27017
       - MONGO_DB=financial_db
       - MONGO_USER=admin
-      - MONGO_PASSWORD=admin123
-    volumes:
-      - ./consumer-app:/app
-    working_dir: /app
+      - MONGO_PASSWORD=password123
     networks:
       hadoop-network:
         ipv4_address: 172.20.1.16
