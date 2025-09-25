@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """
-Kafka에서 데이터를 구독하여 MongoDB에 저장하는 Consumer
+Kafka에서 데이터를 구독하여 MongoDB에 저장하는 Consumer (confluent-kafka 사용)
 """
 
 import json
 import os
-from kafka import KafkaConsumer, KafkaProducer
-from kafka.errors import NoBrokersAvailable, KafkaError
+from confluent_kafka import Consumer, Producer, KafkaError, KafkaException
 from pymongo import MongoClient, ASCENDING
-from pymongo.errors import DuplicateKeyError, BulkWriteError
+from pymongo.errors import BulkWriteError
 import logging
 from datetime import datetime
 import time
 import argparse
 import threading
-from concurrent.futures import ThreadPoolExecutor
-import signal
 import sys
+import signal
 
 # 로깅 설정
 log_dir = "/app/logs"
@@ -34,14 +32,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class KafkaToMongoConsumer:
-    def __init__(self, kafka_hosts='kafka:29092', mongo_host='mongodb',
+    def __init__(self, kafka_hosts, mongo_host='mongodb',
                  mongo_port=27017, mongo_db='financial_db',
                  mongo_user=None, mongo_password=None, batch_size=100,
                  dlq_topic_suffix='_dlq'):
-        """
-        Kafka to MongoDB Consumer 초기화
-        """
-        self.kafka_hosts = kafka_hosts.split(',')
+        self.kafka_hosts = kafka_hosts
         self.mongo_host = mongo_host
         self.mongo_port = mongo_port
         self.mongo_db_name = mongo_db
@@ -60,19 +55,10 @@ class KafkaToMongoConsumer:
         self.db = self.mongo_client[mongo_db]
 
         # DLQ를 위한 Kafka Producer 생성
-        try:
-            self.dlq_producer = KafkaProducer(
-                bootstrap_servers=self.kafka_hosts,
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                acks='all',
-                retries=3
-            )
-            logger.info("DLQ용 Kafka Producer 생성 완료")
-        except NoBrokersAvailable:
-            logger.error("DLQ용 Kafka Producer 생성 실패: 브로커에 연결할 수 없습니다.")
-            raise
+        producer_conf = {'bootstrap.servers': self.kafka_hosts}
+        self.dlq_producer = Producer(producer_conf)
+        logger.info("DLQ용 Kafka Producer 생성 완료")
 
-        # 토픽과 컬렉션 매핑
         self.topic_collection_mapping = {
             'financial_numbers': 'num_data',
             'presentation_links': 'pre_data',
@@ -81,7 +67,6 @@ class KafkaToMongoConsumer:
             'readme_info': 'readme_data'
         }
         
-        # 데이터 타입 변환 함수 매핑
         self.data_processors = {
             'financial_numbers': self.process_num_data,
             'presentation_links': self.process_pre_data,
@@ -90,13 +75,10 @@ class KafkaToMongoConsumer:
             'readme_info': self.process_readme_data
         }
         
-        # MongoDB 인덱스 생성
         self.create_indexes()
-        
         logger.info("KafkaToMongoConsumer 초기화 완료")
-    
+
     def create_indexes(self):
-        """ MongoDB 컬렉션별 인덱스를 생성합니다. """
         try:
             self.db.num_data.create_index([("adsh", ASCENDING)])
             self.db.num_data.create_index([("tag", ASCENDING)])
@@ -112,9 +94,9 @@ class KafkaToMongoConsumer:
             logger.info("MongoDB 인덱스 생성 확인 및 적용 완료")
         except Exception as e:
             logger.error(f"인덱스 생성 실패: {str(e)}")
-    
+            raise
+
     def process_num_data(self, data):
-        """재무 수치 데이터 처리"""
         processed = data.copy()
         if processed.get('qtrs'):
             try:
@@ -132,9 +114,8 @@ class KafkaToMongoConsumer:
             except (ValueError, TypeError):
                 processed['ddate'] = None
         return processed
-    
+
     def process_pre_data(self, data):
-        """프레젠테이션 링크 데이터 처리"""
         processed = data.copy()
         for field in ['report', 'line']:
             if processed.get(field):
@@ -145,9 +126,8 @@ class KafkaToMongoConsumer:
         if processed.get('inpth'):
             processed['inpth'] = processed['inpth'] == '1'
         return processed
-    
+
     def process_sub_data(self, data):
-        """회사 제출 정보 데이터 처리"""
         processed = data.copy()
         date_fields = ['period', 'filed', 'accepted']
         for field in date_fields:
@@ -172,57 +152,53 @@ class KafkaToMongoConsumer:
             if processed.get(field):
                 processed[field] = processed[field] == '1'
         return processed
-    
+
     def process_tag_data(self, data):
-        """태그 정보 데이터 처리"""
         processed = data.copy()
         for field in ['custom', 'abstract']:
             if processed.get(field):
                 processed[field] = processed[field] == '1'
         return processed
-    
-    def process_readme_data(self, data):
-        """README 데이터 처리"""
-        return data.copy()
-    
-    def create_consumer(self, topics):
-        """Kafka Consumer 생성"""
-        return KafkaConsumer(
-            *topics,
-            bootstrap_servers=self.kafka_hosts,
-            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-            key_deserializer=lambda k: k.decode('utf-8') if k else None,
-            auto_offset_reset='earliest',
-            enable_auto_commit=True,
-            group_id='financial-data-consumer',
-            consumer_timeout_ms=10000,
-            max_poll_records=500
-        )
 
-    def send_to_dlq(self, topic, failed_message, error):
-        """처리 실패한 메시지를 DLQ 토픽으로 전송"""
+    def process_readme_data(self, data):
+        return data.copy()
+
+    def create_consumer(self, topics):
+        consumer_conf = {
+            'bootstrap.servers': self.kafka_hosts,
+            'group.id': 'financial-data-consumer',
+            'auto.offset.reset': 'earliest',
+            'enable.auto.commit': True,
+        }
+        consumer = Consumer(consumer_conf)
+        consumer.subscribe(topics)
+        return consumer
+
+    def delivery_report(self, err, msg):
+        if err is not None:
+            logger.error(f"DLQ 메시지 전송 실패: {err}")
+        else:
+            logger.warning(f"메시지를 토픽 {msg.topic()} [{msg.partition()}]으로 전송 완료.")
+
+    def send_to_dlq(self, topic, failed_message_value, error):
         dlq_topic = f"{topic}{self.dlq_topic_suffix}"
         dlq_message = {
             'original_topic': topic,
-            'message_payload': failed_message.value,
-            'kafka_metadata': {
-                'partition': failed_message.partition,
-                'offset': failed_message.offset,
-                'timestamp': failed_message.timestamp,
-                'key': failed_message.key.decode('utf-8') if failed_message.key else None
-            },
+            'message_payload': failed_message_value,
             'error_details': str(error),
             'failed_at': datetime.now().isoformat()
         }
         try:
-            future = self.dlq_producer.send(dlq_topic, value=dlq_message)
-            future.get(timeout=10) # 블로킹으로 전송 확인
-            logger.warning(f"메시지를 DLQ 토픽 {dlq_topic}으로 전송했습니다.")
-        except KafkaError as e:
-            logger.error(f"DLQ 전송 실패: {str(e)}")
+            self.dlq_producer.produce(
+                dlq_topic,
+                value=json.dumps(dlq_message).encode('utf-8'),
+                callback=self.delivery_report
+            )
+            self.dlq_producer.poll(0)
+        except Exception as e:
+            logger.error(f"DLQ 전송 중 예외 발생: {e}")
 
     def process_messages_batch(self, messages, topic):
-        """메시지 배치 처리 (DLQ 로직 포함)"""
         if not messages:
             return 0
         
@@ -230,7 +206,7 @@ class KafkaToMongoConsumer:
         if not collection_name:
             logger.warning(f"알 수 없는 토픽: {topic}")
             for msg in messages:
-                self.send_to_dlq(topic, msg, "Unknown topic")
+                self.send_to_dlq(topic, msg.value().decode('utf-8'), "Unknown topic")
             return 0
         
         collection = self.db[collection_name]
@@ -239,22 +215,20 @@ class KafkaToMongoConsumer:
         
         for message in messages:
             try:
-                raw_data = message.value
-                # 데이터 처리 (파싱 및 타입 변환)
+                raw_data = json.loads(message.value().decode('utf-8'))
                 processed_data = processor(raw_data)
                 
-                # 메타데이터 추가
                 processed_data['created_at'] = datetime.now()
                 processed_data['kafka_metadata'] = {
-                    'topic': message.topic,
-                    'partition': message.partition,
-                    'offset': message.offset,
-                    'timestamp': message.timestamp
+                    'topic': message.topic(),
+                    'partition': message.partition(),
+                    'offset': message.offset(),
+                    'timestamp': message.timestamp()[1] if message.timestamp()[0] != 0 else None
                 }
                 documents.append(processed_data)
             except Exception as e:
-                logger.error(f"메시지 처리 실패 (DLQ로 전송): {str(e)}, Message: {message.value}")
-                self.send_to_dlq(topic, message, e)
+                logger.error(f"메시지 처리 실패 (DLQ로 전송): {str(e)}, Message: {message.value().decode('utf-8')}")
+                self.send_to_dlq(topic, message.value().decode('utf-8'), e)
 
         if not documents:
             return 0
@@ -264,80 +238,80 @@ class KafkaToMongoConsumer:
             logger.info(f"{topic}: {len(result.inserted_ids)}개 문서 삽입 완료")
             return len(result.inserted_ids)
         except BulkWriteError as e:
-            # 중복 키 오류가 아닌 다른 쓰기 오류가 있는 경우, 해당 문서를 DLQ로 보낼 수 있음
-            # 여기서는 우선 삽입된 개수만 로깅하고 넘어감
             inserted_count = e.details.get('nInserted', 0)
             write_errors = e.details.get('writeErrors', [])
             logger.warning(f"{topic}: {inserted_count}개 삽입, {len(write_errors)}개 쓰기 오류 발생")
-            # 상세 오류 로깅
-            for err in write_errors[:3]: # 처음 3개 오류만 로깅
+            for err in write_errors[:3]:
                 logger.debug(f"  오류 코드 {err['code']}: {err['errmsg']}")
             return inserted_count
         except Exception as e:
             logger.error(f"배치 삽입 실패 - Topic: {topic}, Error: {str(e)}")
-            # 삽입 실패한 모든 문서를 DLQ로 보낼 수 있음
             for doc, msg in zip(documents, messages):
-                self.send_to_dlq(topic, msg, e)
+                self.send_to_dlq(topic, msg.value().decode('utf-8'), e)
             return 0
-    
+
     def consume_topic(self, topic):
-        """특정 토픽 구독 및 처리"""
         logger.info(f"{topic} 토픽 구독 시작")
         consumer = self.create_consumer([topic])
         message_buffer = []
         total_processed = 0
         try:
             while not self.shutdown_flag.is_set():
-                try:
-                    message_batch = consumer.poll(timeout_ms=5000)
-                    if not message_batch:
-                        if message_buffer:
-                            processed = self.process_messages_batch(message_buffer, topic)
-                            total_processed += processed
-                            message_buffer = []
-                        continue
-                    for topic_partition, messages in message_batch.items():
-                        message_buffer.extend(messages)
-                    if len(message_buffer) >= self.batch_size:
+                msg = consumer.poll(timeout=1.0)
+                if msg is None:
+                    if message_buffer:
                         processed = self.process_messages_batch(message_buffer, topic)
                         total_processed += processed
                         message_buffer = []
-                except Exception as e:
-                    logger.error(f"{topic} 소비 중 오류: {str(e)}")
-                    time.sleep(5)
+                    continue
+                if msg.error():
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                        continue
+                    else:
+                        logger.error(f"Consumer error: {msg.error()}")
+                        break
+                
+                message_buffer.append(msg)
+                if len(message_buffer) >= self.batch_size:
+                    processed = self.process_messages_batch(message_buffer, topic)
+                    total_processed += processed
+                    message_buffer = []
         finally:
             if message_buffer:
                 processed = self.process_messages_batch(message_buffer, topic)
                 total_processed += processed
             consumer.close()
             logger.info(f"{topic} 토픽 소비 완료 - 총 {total_processed}개 메시지 처리")
-    
+
     def start_consuming(self):
-        """모든 토픽 구독 시작"""
         topics = list(self.topic_collection_mapping.keys())
         logger.info(f"다음 토픽들 구독 시작: {topics}")
-        with ThreadPoolExecutor(max_workers=len(topics)) as executor:
-            futures = [executor.submit(self.consume_topic, topic) for topic in topics]
-            try:
-                for future in futures:
-                    future.result()
-            except KeyboardInterrupt:
-                logger.info("종료 신호 수신")
-                self.shutdown_flag.set()
-    
+        
+        threads = []
+        for topic in topics:
+            thread = threading.Thread(target=self.consume_topic, args=(topic,))
+            thread.start()
+            threads.append(thread)
+            
+        try:
+            for thread in threads:
+                thread.join()
+        except KeyboardInterrupt:
+            logger.info("종료 신호 수신")
+            self.shutdown_flag.set()
+
     def shutdown(self):
-        """정상 종료"""
         logger.info("Consumer 종료 중...")
         self.shutdown_flag.set()
         if self.dlq_producer:
             self.dlq_producer.flush()
-            self.dlq_producer.close()
             logger.info("DLQ Producer 종료 완료")
         self.mongo_client.close()
         logger.info("Consumer 종료 완료")
 
+consumer_instance = None
+
 def signal_handler(signum, frame):
-    """시그널 핸들러"""
     logger.info(f"신호 {signum} 수신, 종료 준비 중...")
     global consumer_instance
     if consumer_instance:
@@ -347,26 +321,22 @@ def signal_handler(signum, frame):
 def main():
     global consumer_instance
     
-    kafka_hosts = os.getenv('KAFKA_HOSTS', 'kafka:29092')
-    mongo_host = os.getenv('MONGO_HOST', 'mongodb')
-    mongo_port = int(os.getenv('MONGO_PORT', 27017))
-    mongo_db = os.getenv('MONGO_DB', 'financial_db')
-    mongo_user = os.getenv('MONGO_USER')
-    mongo_password = os.getenv('MONGO_PASSWORD')
-    batch_size = int(os.getenv('BATCH_SIZE', 100))
-
     parser = argparse.ArgumentParser(description='Kafka to MongoDB Consumer')
-    parser.add_argument('--kafka-hosts', default=kafka_hosts, help='Kafka broker hosts')
-    parser.add_argument('--mongo-host', default=mongo_host, help='MongoDB host')
-    parser.add_argument('--mongo-port', default=mongo_port, type=int, help='MongoDB port')
-    parser.add_argument('--mongo-db', default=mongo_db, help='MongoDB database name')
-    parser.add_argument('--mongo-user', default=mongo_user, help='MongoDB username')
-    parser.add_argument('--mongo-password', default=mongo_password, help='MongoDB password')
-    parser.add_argument('--batch-size', default=batch_size, type=int, help='Batch size for processing')
+    parser.add_argument('--kafka-hosts', default=os.getenv('KAFKA_HOSTS'), help='Kafka broker hosts')
+    parser.add_argument('--mongo-host', default=os.getenv('MONGO_HOST', 'mongodb'), help='MongoDB host')
+    parser.add_argument('--mongo-port', default=int(os.getenv('MONGO_PORT', 27017)), type=int, help='MongoDB port')
+    parser.add_argument('--mongo-db', default=os.getenv('MONGO_DB', 'financial_db'), help='MongoDB database name')
+    parser.add_argument('--mongo-user', default=os.getenv('MONGO_USER'), help='MongoDB username')
+    parser.add_argument('--mongo-password', default=os.getenv('MONGO_PASSWORD'), help='MongoDB password')
+    parser.add_argument('--batch-size', default=int(os.getenv('BATCH_SIZE', 100)), type=int, help='Batch size for processing')
     parser.add_argument('--topics', nargs='+', help='Specific topics to consume')
     
     args = parser.parse_args()
-    
+
+    if not args.kafka_hosts:
+        logger.error("KAFKA_HOSTS 환경 변수 또는 --kafka-hosts 인자가 설정되지 않았습니다.")
+        sys.exit(1)
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
@@ -397,17 +367,16 @@ def main():
             logger.info("Consumption finished.")
             return 0
 
-        except NoBrokersAvailable:
-            logger.warning(f"Could not connect to Kafka. Retrying in {wait_time} seconds...")
+        except KafkaException as e:
+            logger.warning(f"Could not connect to Kafka: {e}. Retrying in {wait_time} seconds...")
             time.sleep(wait_time)
             continue
         except Exception as e:
-            logger.error(f"Consumer failed with an unexpected error: {str(e)}")
+            logger.error(f"Consumer failed with an unexpected error: {e}", exc_info=True)
             return 1
     
     logger.error("Failed to connect to Kafka after multiple retries. Exiting.")
     return 1
 
 if __name__ == "__main__":
-    consumer_instance = None
     exit(main())
