@@ -1,5 +1,5 @@
 # requirements-consumer.txt  
-kafka-python==2.0.2
+confluent-kafka
 pymongo==4.6.1
 pandas==2.1.4
 python-dateutil==2.8.2
