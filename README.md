@@ -56,6 +56,7 @@ Kaggle 의 "Financial Statement Extracts" 데이터셋(총 6개의 JSON / 5GB) �
 ## 구현 / 고려 내용
 * VMware 에서 Hadoop Cluster 구축 (Master Node 1, Data Node 4 - 이 중 Data Node 2대에서 환경 구축)
 * 파이프라인 구조도
+
   <img width="392" height="402" alt="image" src="https://github.com/user-attachments/assets/2132d5bc-cd72-464a-96f3-e581d5230316" />
 
 * HDFS 에 처리할 데이터셋을 업로드
@@ -66,6 +67,7 @@ Kaggle 의 "Financial Statement Extracts" 데이터셋(총 6개의 JSON / 5GB) �
 * <스크립트 2> - kafka_to_mongo_consumer.py
   * Kafka 에서 메시지를 Consumer
   * 해당 메시지를 MongoDB에 적재
+  
     <img width="455" height="322" alt="image" src="https://github.com/user-attachments/assets/b9cc385e-1716-4885-986e-01d1075b9ac7" />
 
 * 분산 DB 시스템으로 사용 기술을 선택할 때 CAP 이론 검토
