@@ -26,11 +26,9 @@ class LogRecord(BaseModel):
 # --- Python Callables for DAG Tasks ---
 
 def check_mongo_data(**kwargs):
-    """
-    Checks if new data has been inserted into MongoDB since the DAG run started.
-    """
+    """Checks if new data has been inserted into MongoDB since the DAG run started."""
     client = MongoClient(
-        ['mongodb-1:27017', 'mongodb-2:27018'],
+        ['mongodb-1:27017', 'mongodb-2:27017'],
         username='admin',
         password='password123',
         replicaSet='rs0',
@@ -72,7 +70,7 @@ def validate_mongo_data(**kwargs):
     Validates the schema and content of the latest data in MongoDB.
     """
     client = MongoClient(
-        ['mongodb-1:27017', 'mongodb-2:27018'],
+        ['mongodb-1:27017', 'mongodb-2:27017'],
         username='admin',
         password='password123',
         replicaSet='rs0',
@@ -137,7 +135,7 @@ with DAG(
         application="/opt/airflow/project/spark_producer.py",
         application_args=[
             "--json-file", "/user/hadoop3/test.json",
-            "--kafka-brokers", "kafka-1:9092,kafka-2:9093"
+            "--kafka-brokers", "192.168.0.12:9092,192.168.0.13:9093"
         ],
         conn_id="spark_default",
         packages="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0",
