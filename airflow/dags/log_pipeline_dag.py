@@ -29,7 +29,13 @@ def check_mongo_data(**kwargs):
     """
     Checks if new data has been inserted into MongoDB since the DAG run started.
     """
-    client = MongoClient('mongodb://admin:password123@mongodb-1:27017/')
+    client = MongoClient(
+        ['mongodb-1:27017', 'mongodb-2:27018'],
+        username='admin',
+        password='password123',
+        replicaSet='rs0',
+        read_preference='primaryPreferred'
+    )
     db = client.test
     collection = db.logs
     
@@ -65,7 +71,13 @@ def validate_mongo_data(**kwargs):
     """
     Validates the schema and content of the latest data in MongoDB.
     """
-    client = MongoClient('mongodb://admin:password123@mongodb-1:27017/')
+    client = MongoClient(
+        ['mongodb-1:27017', 'mongodb-2:27018'],
+        username='admin',
+        password='password123',
+        replicaSet='rs0',
+        read_preference='primaryPreferred'
+    )
     db = client.test
     collection = db.logs
 
@@ -115,7 +127,7 @@ with DAG(
     check_hdfs_file = HdfsSensor(
         task_id="check_hdfs_file",
         hdfs_conn_id="hdfs_default",
-        filepath="/test/test.log",
+        filepath="/user/hadoop3/test.json",
         poke_interval=10,
         timeout=300,
     )
@@ -123,6 +135,10 @@ with DAG(
     run_spark_producer = SparkSubmitOperator(
         task_id="run_spark_producer",
         application="/opt/airflow/project/spark_producer.py",
+        application_args=[
+            "--json-file", "/user/hadoop3/test.json",
+            "--kafka-brokers", "kafka-1:9092,kafka-2:9093"
+        ],
         conn_id="spark_default",
         packages="org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0",
         conf={
