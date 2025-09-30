@@ -1,0 +1,6 @@
+apache-airflow-providers-apache-spark
+apache-airflow-providers-apache-hdfs
+apache-airflow-providers-mongo
+apache-airflow-providers-apache-kafka
+pymongo
+pydantic
