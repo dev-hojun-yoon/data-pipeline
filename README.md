@@ -88,6 +88,7 @@ Kaggle 의 "Financial Statement Extracts" 데이터셋(총 6개의 JSON / 5GB) �
   * Mongo DB ReplicaSet 구성을 위해 동일한 이름으로 설정 (--replSet rs0)
   * Mongo DB Primary 가 죽은 경우 전체 노드 개수가 짝수이면 split-brain 문제로 일관성이 깨지는 경우가 발생할 수 있기 때문에 arbiter (투표전용 노드) 추가
   <img width="642" height="267" alt="image" src="https://github.com/user-attachments/assets/e88f5a45-d72f-4865-adbc-d850950abea1" />
+* Airflow 이용 배치 자동화 및 데이터 정합성 검증 
 <br>
 
 ## 알게 된 내용
