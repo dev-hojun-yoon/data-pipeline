@@ -46,11 +46,11 @@ class KafkaToMongoConsumer:
 
         # MongoDB 연결
         self.mongo_client = MongoClient(
-            mongo_host,
-            mongo_port,
-            username=mongo_user,
-            password=mongo_password,
-            authSource='admin'
+            ['mongodb-1:27017', 'mongodb-2:27017'],
+            username=self.mongo_user,
+            password=self.mongo_password,
+            replicaSet='rs0',
+            read_preference='primaryPreferred'
         )
         self.db = self.mongo_client[mongo_db]
 
